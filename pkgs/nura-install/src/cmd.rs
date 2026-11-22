@@ -85,12 +85,20 @@ fn describe(cmd: &Command) -> String {
         .join(" ")
 }
 
-/// Collects everything the pipe delivers.
+/// Collects everything; the newlines go to the step's item counter (files hashed so far).
 fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<std::io::Result<Vec<u8>>> {
     thread::spawn(move || {
         let mut all = Vec::new();
-        pipe.read_to_end(&mut all)?;
-        Ok(all)
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            match pipe.read(&mut buf)? {
+                0 => return Ok(all),
+                n => {
+                    ui::add_items(buf[..n].iter().filter(|b| **b == b'\n').count() as u64);
+                    all.extend_from_slice(&buf[..n]);
+                }
+            }
+        }
     })
 }
 
@@ -122,6 +130,7 @@ pub fn run(cmd: &mut Command, spec: Spec) -> Result<Done> {
     let line = describe(cmd);
     log::line(&format!("run: {line}"));
     let _shown = ui::ensure(&format!("running {line}"));
+    ui::reset_counters();
     cmd.stdin(if spec.stdin.is_some() {
         Stdio::piped()
     } else {

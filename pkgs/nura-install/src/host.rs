@@ -21,6 +21,42 @@ pub fn mkdir(dir: &Path) -> Result<()> {
         .map_err(|e| format!("creating {}: {e}", dir.display()).into())
 }
 
+/// Makes what the owner cannot get again durable before the run goes on: fsync of every file in `dir`
+/// (and in the directories below it), then of each directory up to and including `root`, so the new
+/// entries survive a power cut too. Without it, a crash after the fastboot writes could leave a
+/// backup the record names but the disk never got.
+pub fn sync_tree(dir: &Path, root: &Path) -> Result<()> {
+    sync_below(dir)?;
+    let mut at = Some(dir);
+    while let Some(d) = at {
+        sync_path(d)?;
+        at = (d != root).then(|| d.parent()).flatten();
+    }
+    checked("synced to disk", &dir.display().to_string());
+    Ok(())
+}
+
+fn sync_below(dir: &Path) -> Result<()> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("reading {}: {e}", dir.display()))?
+            .path();
+        if path.is_dir() {
+            sync_below(&path)?;
+        }
+        sync_path(&path)?;
+    }
+    Ok(())
+}
+
+/// fsync of one file or directory.
+pub fn sync_path(path: &Path) -> Result<()> {
+    File::open(path)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| format!("syncing {}: {e}", path.display()).into())
+}
+
 pub fn remove(path: &Path) -> Result<()> {
     let result = if path.is_dir() {
         fs::remove_dir_all(path)
@@ -246,8 +282,10 @@ pub fn check_tools() -> Result<((), String)> {
         plain("jq", "--version"),
         plain("sha256sum", "--version"),
         plain("xz", "--version"),
+        plain("tar", "--version"),
         plain("date", "--version"),
         plain("df", "--version"),
+        plain("cut", "--version"),
     ];
     let count = tools.len();
     for tool in tools {
@@ -264,7 +302,7 @@ pub fn tools_naming() -> String {
     "checking that the programs this run needs start".to_string()
 }
 
-/// The cache's disk must have room for the downloads.
+/// The cache's disk must have room for the downloads and the backup.
 pub fn check_disk(cache: &Path) -> Result<((), String)> {
     let free = free_bytes(cache)?;
     let needed = config::needed_gib()?;
@@ -344,6 +382,17 @@ mod tests {
         assert!(joined.contains("--connect-timeout 30"));
         assert!(joined.contains("--speed-limit 1024 --speed-time 60"));
         assert!(!joined.contains("--max-time"));
+    }
+
+    #[test]
+    fn sync_tree_reaches_files_and_every_directory_up_to_the_root_and_fails_loud() {
+        let root = std::env::temp_dir().join(format!("nura-sync-{}", std::process::id()));
+        let dir = root.join("a").join("b");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("f"), "x").unwrap();
+        assert!(sync_tree(&dir, &root).is_ok());
+        assert!(sync_tree(&root.join("missing"), &root).is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

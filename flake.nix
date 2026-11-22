@@ -38,6 +38,7 @@
               {
                 nativeBuildInputs = with pkgs; [
                   curl
+                  gnutar
                   jq
                   util-linux
                   xz

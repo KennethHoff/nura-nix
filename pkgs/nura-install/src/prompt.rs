@@ -376,6 +376,16 @@ pub fn menu(entries: &[Entry]) -> Result<Option<usize>> {
     result
 }
 
+/// One option to approve, with Stop; `word` is what a piped test types.
+pub fn approve(word: &str, label: &str) -> Result<bool> {
+    let entry = Entry {
+        word: word.to_string(),
+        label: label.to_string(),
+        about: String::new(),
+    };
+    Ok(menu(&[entry])?.is_some())
+}
+
 fn pick(entries: &[Entry]) -> Result<Option<usize>> {
     let cols = columns();
     let last = entries.len();

@@ -24,11 +24,11 @@ use std::process::ExitCode;
 
 const USAGE: &str = "Usage: nura-install
 
-Takes no arguments: it checks the phone and finds Nura's build for it. Nothing is written to the
-phone.
+Takes no arguments: it backs up the phone and checks that it can take Nura. Nothing is written to
+the phone.
 
-  Android over adb                check the phone, find Nura's build and its images, in two
-                                  sections (Preflight, Finish)
+  Android over adb                check the phone, find Nura's build, back up the phone, in
+                                  two sections (Preflight, Prepare)
   -h, --help                      this text
 
 Exit codes:
@@ -57,6 +57,14 @@ pub fn interrupted() -> ! {
     log::line("outcome: interrupted");
     finish_output("interrupted");
     std::process::exit(i32::from(signals::exit_code()))
+}
+
+/// The line the summary carries about the backup; a missing one is said loudly.
+fn backup_note(backup: Option<&Path>) -> String {
+    match backup {
+        Some(dir) => format!("The backup of Android is under {}.", dir.display()),
+        None => "NO BACKUP WAS TAKEN: nothing of Android's data is saved.".to_string(),
+    }
 }
 
 fn finish_output(outcome: &str) {
@@ -153,7 +161,7 @@ fn choose_interface(offers: Vec<Offer>) -> Result<Offer> {
 }
 
 fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
-    ui::plan(9 + u32::from(wait));
+    ui::plan(11 + u32::from(wait));
     ui::section("Preflight");
     ui::step(&steps::CHECK_COMPUTER);
     let mut report = Report::new();
@@ -202,9 +210,21 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     ui::step(&steps::FIND_IMAGES);
     preflight::images(&mut report, &offer.build, cache);
     report.conclude("nura-install")?;
+    ui::section("Prepare");
+    ui::step(&steps::CONFIRM);
+    adb::confirm_losses()?;
+    let take_backup = adb::choose_backup()?;
+    ui::step(&steps::BACKUP);
+    let backup = if take_backup {
+        Some(adb::backup(cache, &serial)?)
+    } else {
+        ui::say("  skipped: no backup is taken");
+        None
+    };
     ui::section("Finish");
     ui::step(&steps::SUMMARY);
     ui::say("Nothing was written to the phone.");
+    ui::say(&backup_note(backup.as_deref()));
     Ok(())
 }
 

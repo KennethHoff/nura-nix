@@ -25,9 +25,17 @@ impl Mark {
 
 /// What a running step has measured: a real count, with its total only when that is truly known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Meter {
+pub enum Meter<'a> {
     None,
-    Bytes { done: u64, total: Option<u64> },
+    Bytes {
+        done: u64,
+        total: Option<u64>,
+    },
+    Items {
+        done: u64,
+        total: Option<u64>,
+        noun: &'a str,
+    },
 }
 
 /// `x.y s` under ten seconds, whole seconds up to a minute, then `m:ss`, and `h:mm:ss` from an hour.
@@ -244,6 +252,23 @@ pub fn meter_text(meter: Meter, elapsed_ms: u64, with_bar: bool) -> String {
             Some(r) => format!("{}, {r}", human(done)),
             None => human(done),
         },
+        Meter::Items {
+            done,
+            total: Some(total),
+            noun,
+        } => {
+            let pct = percent(done, total);
+            if with_bar {
+                format!("{}  {done}/{total} {noun}  {pct}%", bar(done, total))
+            } else {
+                format!("{done} of {total} {noun} ({pct}%)")
+            }
+        }
+        Meter::Items {
+            done,
+            total: None,
+            noun,
+        } => format!("{done} {noun}"),
     }
 }
 
@@ -501,7 +526,36 @@ mod tests {
             total: None,
         };
         assert_eq!(meter_text(zero, 0, true), "0 bytes");
+        let items = Meter::Items {
+            done: 7,
+            total: None,
+            noun: "files",
+        };
+        assert_eq!(meter_text(items, 5000, true), "7 files");
         assert_eq!(meter_text(Meter::None, 5000, true), "");
+    }
+
+    #[test]
+    fn counted_items_with_a_known_total_get_a_bar_and_percent() {
+        let items = Meter::Items {
+            done: 453,
+            total: Some(453),
+            noun: "files",
+        };
+        assert_eq!(
+            meter_text(items, 1000, true),
+            format!("{}  453/453 files  100%", "█".repeat(24))
+        );
+        assert_eq!(meter_text(items, 1000, false), "453 of 453 files (100%)");
+        let none = Meter::Items {
+            done: 0,
+            total: Some(10),
+            noun: "files",
+        };
+        assert_eq!(
+            meter_text(none, 0, true),
+            format!("{}  0/10 files  0%", "░".repeat(24))
+        );
     }
 
     #[test]

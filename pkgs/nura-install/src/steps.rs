@@ -127,6 +127,27 @@ pub const FIND_IMAGES: Step = tool(
     ],
     Some("nothing sent"),
 );
+pub const CONFIRM: Step = you(
+    "Confirm what is lost",
+    "confirm",
+    Some("about 1 min"),
+    &[
+        "[ ] Settings > Security > Screen lock: None (also turns off Factory Reset Protection)",
+        "[ ] Then choose below: back up the phone, or skip the backup (that takes a second choice, with the cursor on Stop)",
+    ],
+    Some(ON_ANDROID),
+);
+pub const BACKUP: Step = tool(
+    "Back up the phone",
+    Some("5-20 min (by stored data)"),
+    &[
+        "- copies /sdcard",
+        "- exports contacts, SMS, call log, calendar",
+        "- checks the copy against hashes from the phone (a broken copy is caught before the wipe)",
+        "- skipped when you chose so in the previous step",
+    ],
+    Some(ON_ANDROID),
+);
 pub const TO_FASTBOOT: Step = you(
     "Put the phone in fastboot",
     "Volume Down + Power",
@@ -146,7 +167,7 @@ pub const SUMMARY: Step = tool(
 );
 
 #[cfg(test)]
-pub const ALL: [&Step; 10] = [
+pub const ALL: [&Step; 12] = [
     &FIND_BUILDS,
     &CHOOSE_UI,
     &CHECK_COMPUTER,
@@ -155,6 +176,8 @@ pub const ALL: [&Step; 10] = [
     &RESTART_TO_ANDROID,
     &CHECK_ADB,
     &FIND_IMAGES,
+    &CONFIRM,
+    &BACKUP,
     &TO_FASTBOOT,
     &SUMMARY,
 ];

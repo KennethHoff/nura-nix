@@ -2,7 +2,7 @@
 #
 # ## Why it shells out
 #
-# It runs adb, fastboot, curl, jq and xz instead of
+# It runs adb, fastboot, curl, jq, tar and xz instead of
 # linking crates for USB, HTTP, JSON and LZMA, so the only
 # crate is libc, for the effective user id, the umask, catching Ctrl-C and
 # reading the terminal without buffering. The wrapper puts
@@ -25,6 +25,7 @@
   android-tools,
   coreutils,
   curl,
+  gnutar,
   jq,
   xz,
   cacheDir ? null,
@@ -59,6 +60,7 @@ rustPlatform.buildRustPackage {
           android-tools
           coreutils
           curl
+          gnutar
           jq
           xz
         ]

@@ -8,11 +8,12 @@ use crate::{config, log, signals, steps};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
+static ITEMS: AtomicU64 = AtomicU64::new(0);
 static CHILD: AtomicU32 = AtomicU32::new(0);
 static CONSOLE: Mutex<Console> = Mutex::new(Console::new());
 
@@ -37,7 +38,14 @@ impl Source {
 #[derive(Clone, Debug)]
 pub enum Gauge {
     None,
-    Bytes { source: Source, total: Option<u64> },
+    Bytes {
+        source: Source,
+        total: Option<u64>,
+    },
+    Items {
+        noun: &'static str,
+        total: Option<u64>,
+    },
 }
 
 impl Gauge {
@@ -53,6 +61,10 @@ impl Gauge {
             source: Source::read_pos(path),
             total,
         }
+    }
+
+    pub fn lines(noun: &'static str, total: Option<u64>) -> Gauge {
+        Gauge::Items { noun, total }
     }
 }
 
@@ -191,6 +203,11 @@ fn meter_of(active: &Active, with_bar: bool) -> String {
             done: bytes_of(source).unwrap_or(0),
             total: *total,
         },
+        Gauge::Items { noun, total } => Meter::Items {
+            done: ITEMS.load(Ordering::Relaxed),
+            total: *total,
+            noun,
+        },
     };
     render::meter_text(meter, elapsed, with_bar)
 }
@@ -233,6 +250,7 @@ fn beat() {
 }
 
 fn start(c: &mut Console, label: &str, gauge: Gauge) {
+    ITEMS.store(0, Ordering::Relaxed);
     c.active = Some(Active {
         label: label.to_string(),
         sub: None,
@@ -245,6 +263,14 @@ fn start(c: &mut Console, label: &str, gauge: Gauge) {
 fn finish(c: &mut Console) -> u64 {
     clear_live(c);
     c.active.take().map_or(0, |a| ms(a.started))
+}
+
+pub fn add_items(n: u64) {
+    ITEMS.fetch_add(n, Ordering::Relaxed);
+}
+
+pub fn reset_counters() {
+    ITEMS.store(0, Ordering::Relaxed);
 }
 
 /// The process the running step is waiting for, for gauges that read its file positions.
@@ -329,6 +355,7 @@ impl Drop for Busy {
 pub struct Job<'a> {
     label: &'a str,
     naming: Option<String>,
+    gauge: Gauge,
     explain: bool,
 }
 
@@ -337,6 +364,7 @@ impl<'a> Job<'a> {
         Job {
             label,
             naming: None,
+            gauge: Gauge::None,
             explain: false,
         }
     }
@@ -345,6 +373,11 @@ impl<'a> Job<'a> {
     /// jobs that have one, since the spinner already names the quick ones.
     pub fn naming(mut self, text: impl Into<String>) -> Self {
         self.naming = Some(text.into());
+        self
+    }
+
+    pub fn gauge(mut self, gauge: Gauge) -> Self {
+        self.gauge = gauge;
         self
     }
 
@@ -367,7 +400,7 @@ pub fn run<T>(job: Job, work: impl FnOnce() -> Result<(T, String)>) -> Result<T>
                 .unwrap_or_else(|| format!("checking {}", job.label));
             out(&mut c, &format!("  ... {naming}"));
         }
-        start(&mut c, job.label, Gauge::None);
+        start(&mut c, job.label, job.gauge);
     }
     let result = work();
     let mut c = lock();
@@ -456,6 +489,7 @@ fn bar_percent(active: &Active) -> Option<u64> {
             source,
             total: Some(t),
         } => (bytes_of(source).unwrap_or(0), *t),
+        Gauge::Items { total: Some(t), .. } => (ITEMS.load(Ordering::Relaxed), *t),
         _ => return None,
     };
     (done <= total).then(|| render::percent(done, total))

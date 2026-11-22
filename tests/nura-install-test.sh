@@ -20,8 +20,13 @@ fail() {
   exit 1
 }
 
-mkdir -p "$root/srv" "$root/bin"
+mkdir -p "$root/srv" "$root/bin" "$root/sdcard/sub dir"
 sum() { sha256sum "$1" | cut -d' ' -f1; }
+
+# Fake phone storage.
+printf 'hello' > "$root/sdcard/a.txt"
+printf 'nested' > "$root/sdcard/sub dir/b c.txt"
+printf '' > "$root/sdcard/empty"
 
 # Nura's images: the newest build (what the index should lead to), an older one, and one from another release.
 for k in nura old rel; do
@@ -70,7 +75,11 @@ EOS
 #   FAKE_ADB_SERIAL, FAKE_SUFFIX  getprop answers
 #   FAKE_ACCOUNTS, FAKE_LEVEL, FAKE_DUMPSYS_BAD=1  dumpsys answers
 #   FAKE_CRLF=1  end the getprop and dumpsys lines with CRLF as a real adb shell can
-#   FAKE_SLOW_BATTERY=<seconds>  dumpsys battery is slow
+#   FAKE_UNREADABLE=1|quiet  the hashing run can't read a file: exit 1, or the message with exit 0
+#   FAKE_BAD_MANIFEST=1  the phone's hash list disagrees with the tar
+#   FAKE_CONTENT_DENY=stderr|stdout|exit  a content query is denied: on stderr, as stdout text, or by exit code
+#   FAKE_CONTENT_EMPTY=<uri fragment>  that content query says "No result found."
+#   FAKE_SLOW_TAR=<seconds>  the tar stream stalls that long after its first 512 bytes;  FAKE_SLOW_BATTERY=<seconds>  dumpsys battery is slow
 cat > "$root/bin/adb" <<'EOS'
 [ "$1" = version ] && { echo "Android Debug Bridge version fake"; exit 0; }
 echo "$*" >> "$ADB_LOG"
@@ -90,6 +99,15 @@ if [ "$1" = devices ]; then
 fi
 [ "$1" = -s ] && [ "$2" = ABC123 ] || { echo "error: device not found" >&2; exit 1; }
 shift 2
+sd=${FAKE_SDCARD}
+if [ "$1" = exec-out ]; then
+  [ "$*" = "exec-out tar -cf - -C /sdcard ." ] || exit 1
+  if [ -n "${FAKE_SLOW_TAR:-}" ]; then
+    tar -b 1 -cf - -C "$sd" . | { dd bs=512 count=1 iflag=fullblock 2> /dev/null; sleep "$FAKE_SLOW_TAR"; cat; }
+    exit 0
+  fi
+  exec tar -b 1 -cf - -C "$sd" .
+fi
 [ "$1" = shell ] || exit 1
 shift
 case "$*" in
@@ -98,7 +116,24 @@ case "$*" in
   "dumpsys account")
     if [ "${FAKE_DUMPSYS_BAD:-}" = 1 ]; then echo "Accounts changed their format"; exit 0; fi
     printf 'User UserInfo{0:Owner:13}:\n  Accounts: %s\nUser UserInfo{10:Work:30}:\n  Accounts: 0\n' "${FAKE_ACCOUNTS:-0}" | crlf ;;
+  "cd /sdcard && find . -printf '%M %s %p\n'") (cd "$sd" && find . -printf '%M %s %p\n') ;;
   "dumpsys battery") sleep "${FAKE_SLOW_BATTERY:-0}"; printf 'Current Battery Service state:\n  AC powered: false\n  level: %s\n' "${FAKE_LEVEL:-80}" | crlf ;;
+  "cd /sdcard && find . -type f -exec sha256sum {} +")
+    case "${FAKE_UNREADABLE:-}" in
+      1) echo "sha256sum: ./secret: Permission denied" >&2; exit 1 ;;
+      quiet) echo "sha256sum: ./secret: Permission denied" >&2 ;;
+    esac
+    out=$(cd "$sd" && find . -type f -exec sha256sum {} +)
+    if [ "${FAKE_BAD_MANIFEST:-}" = 1 ]; then out=$(printf '%s\n' "$out" | sed '1s/^./0/;1s/^00/11/'); fi
+    printf '%s\n' "$out" ;;
+  "content query --uri "*)
+    case "${FAKE_CONTENT_DENY:-}" in
+      stderr) echo "Error while accessing provider:${4#content://}" >&2; echo "java.lang.SecurityException: Permission Denial" >&2; exit 0 ;;
+      stdout) echo "Error while accessing provider:${4#content://}"; exit 0 ;;
+      exit) exit 1 ;;
+    esac
+    case "$4" in *"${FAKE_CONTENT_EMPTY:-@none@}"*) echo "No result found."; exit 0 ;; esac
+    printf 'Row: 0 _id=1, name=x\nRow: 1 _id=2, name=y\n' ;;
   *) echo "fake adb: unexpected shell command: $*" >&2; exit 1 ;;
 esac
 EOS
@@ -168,14 +203,17 @@ export NURA_INSTALL_ADB=$root/bin/adb NURA_INSTALL_FASTBOOT=$root/bin/fastboot
 export NURA_INSTALL_NURA_INDEX=file://$root/index.json NURA_INSTALL_CACHE=$cache
 export NURA_INSTALL_ALLOW_FILE_URLS=1 NURA_INSTALL_WAIT_SECONDS=0 NURA_INSTALL_NEEDED_GIB=0
 export NURA_INSTALL_ALLOW_PIPED_INPUT=1
+export FAKE_SDCARD=$root/sdcard
 REAL_CURL=$(command -v curl)
 export REAL_CURL
 
 # Typed input shared by the cases.
+done_phrase='Confirm'
 # Menus are answered by their word when the input is piped (the test build only); the pty cases press keys.
 choice='phosh\n'
+confirmations="${choice}$done_phrase\nbackup\n"
 fresh_cache() { rm -rf "$cache"; }
-again() { run "$choice"; } # a full run that keeps the cache
+again() { run "$confirmations"; } # a full run that keeps the cache
 go() { fresh_cache; again; }
 run() { # stdin, args...
   local input=$1
@@ -191,6 +229,10 @@ refused() { # name, expected message, expected rc (default 1)
   [ "$rc" = "${3:-1}" ] || fail "$1 exited $rc"
   grep -q -- "$2" "$root/out" || fail "$1 not reported as: $2"
   no_writes "$1"
+}
+no_backup() { # nothing was copied off the phone
+  ! grep -q 'exec-out' "$ADB_LOG" || fail "$1: the phone was read for the backup"
+  [ ! -e "$cache/backups" ] || fail "$1: a backup directory exists"
 }
 
 # Terminal behaviour helpers.
@@ -298,35 +340,53 @@ export NURA_INSTALL_CURL=$root/bin/curl
 ## Fresh from Android
 
 fresh_cache
-run "$choice"
+run "$confirmations"
 [ "$rc" = 0 ] || fail "the run exited $rc"
 [ "$(cat "$LOG")" = "devices
 $fb_all" ] || fail "the run asked fastboot: $(cat "$LOG")"
 no_writes "the run"
+# The backup is on disk before the run goes on (fsync of files and directories).
+synced=$(grep 'check synced to disk' "$cache/logs/"* | sed 's/.*synced to disk: //')
+[ "$(printf '%s\n' "$synced" | grep -c "$cache/backups/ABC123/backup-")" = 1 ] || fail "the backup was not synced: $synced"
 cp "$root/out" "$root/out.run"
 plain_output "run" "$root/out.run"
 ! LC_ALL=C grep -aq -P '\x1b\]2;' "$root/out.run" || fail "a title escape reached a pipe"
 every_wait_is_named "run" "$root/out.run"
 step_blocks "run" "$root/out.run"
-for line in '  \[ ok \] fastboot product: FP6' \
-  '  \[ ok \] fastboot partition-size:userdata_a \(absent\): absent' \
+for line in '  \.\.\. streaming the phone.s storage to [^ ]*sdcard\.tar$' '  \.\.\. hashing 3 files on the phone' \
+  '  \[ ok \] hash /sdcard on the phone: 3 hashes' '  \[ ok \] fastboot product: FP6' \
+  '  \[ ok \] fastboot partition-size:userdata_a \(absent\): absent' '  \[ ok \] sizing /sdcard: 3 files, 4\.5 KiB' \
   '  \[ ok \] exactly one phone: ABC123' '  \[ ok \] accounts signed in: none signed in' \
   '  Nura build: edge phosh 2026-11-13T23:32:00' \
-  '  Preflight passed: ' '^done in [0-9.]+ s: finished$' '^  Step 9 of 9 done  '; do
+  '  Preflight passed: ' '^done in [0-9.]+ s: finished$' '^  Step 9 of 11 done  '; do
   grep -qE -- "$line" "$root/out.run" || fail "the output lacks: $line"
 done
-[ "$(grep -c '^== Step ' "$root/out.run")" = 9 ] || fail "the run is not nine steps"
-[ "$(grep -c '^=== ' "$root/out.run")" = 2 ] || fail "the run is not two sections"
+[ "$(grep -c '^== Step ' "$root/out.run")" = 11 ] || fail "the run is not eleven steps"
+[ "$(grep -c '^=== ' "$root/out.run")" = 3 ] || fail "the run is not three sections"
+# The planned length of the /sdcard tar equals what the phone streamed, byte for byte.
+planned() { grep -h 'check sdcard tar bytes' "$1"/logs/* | sed 's/.*: //'; }
+[ "$(planned "$cache")" = "$(stat -c %s "$cache"/backups/ABC123/backup-*/sdcard.tar)" ] || fail "the planned tar length $(planned "$cache") differs from the stream $(stat -c %s "$cache"/backups/ABC123/backup-*/sdcard.tar)"
+backup=$(echo "$cache"/backups/ABC123/backup-*)
+[ -d "$backup" ] || fail "no backup directory"
+for f in sdcard.tar manifest.sha256 contacts.txt sms.txt call-log.txt calendar.txt; do
+  [ -s "$backup/$f" ] || [ "$f" = sdcard.tar ] || fail "backup lacks $f"
+done
+[ "$(tar -xOf "$backup/sdcard.tar" './sub dir/b c.txt')" = nested ] || fail "tar lacks a file"
+[ "$(stat -c %a "$backup/sdcard.tar")" = 600 ] || fail "backup is not private"
+for n in contacts.txt sms.txt call-log.txt calendar.txt; do grep -q "$n: 2 rows" "$root/out" || fail "no row count for $n"; done
+grep -q "The backup of Android is under $backup" "$root/out" || fail "the summary lacks the backup"
+grep -q 'Nothing was written to the phone' "$root/out" || fail "the summary does not say nothing was written"
+[ -z "$(find "$cache" -perm /077 -not -type l)" ] || fail "something in the cache is not private: $(find "$cache" -perm /077)"
 # The sections and their steps, in order.
-[ "$(sections_of "$root/out.run")" = "[Preflight] 1/9 2/9 3/9 4/9 5/9 6/9 7/9 8/9 [Finish] 9/9" ] \
+[ "$(sections_of "$root/out.run")" = "[Preflight] 1/11 2/11 3/11 4/11 5/11 6/11 7/11 8/11 [Prepare] 9/11 10/11 [Finish] 11/11" ] \
   || fail "sections out of order: $(sections_of "$root/out.run")"
 order=$(grep -n -E '^== Step ' "$root/out" | sed -E 's/^[0-9]*:== Step [0-9]+ of [0-9]+ · (YOU|TOOL): //' | tr '\n' '|')
-[ "$order" = "Check this computer|Check the phone over adb|Put the phone in fastboot|Check the bootloader|Find Nura's builds for the phone|Choose Nura's interface|Restart into Android|Find, download and verify the images|Summarize|" ] \
+[ "$order" = "Check this computer|Check the phone over adb|Put the phone in fastboot|Check the bootloader|Find Nura's builds for the phone|Choose Nura's interface|Restart into Android|Find, download and verify the images|Confirm what is lost|Back up the phone|Summarize|" ] \
   || fail "steps out of order: $order"
 actors=$(grep -E '^== Step ' "$root/out" | sed -E 's/^.* · (YOU|TOOL): .*/\1/' | tr '\n' ' ')
-[ "$actors" = "TOOL TOOL YOU TOOL TOOL YOU YOU TOOL TOOL " ] || fail "actors out of order: $actors"
-grep -q '^== Step 1 of 9 · TOOL: Check this computer$' "$root/out" || fail "steps are not numbered"
-grep -q '^== Step 9 of 9 · TOOL: Summarize$' "$root/out" || fail "the last step is not 9 of 9"
+[ "$actors" = "TOOL TOOL YOU TOOL TOOL YOU YOU TOOL YOU TOOL TOOL " ] || fail "actors out of order: $actors"
+grep -q '^== Step 1 of 11 · TOOL: Check this computer$' "$root/out" || fail "steps are not numbered"
+grep -q '^== Step 11 of 11 · TOOL: Summarize$' "$root/out" || fail "the last step is not 11 of 11"
 grep -q 'Hold Power, tap Power off' "$root/out" && grep -q 'Hold Volume Down + Power until the fastboot screen shows' "$root/out" || fail "no fastboot instruction"
 grep -q '^  \.\.\. waiting for the phone in fastboot mode (up to 0 s)' "$root/out" || fail "no waiting line"
 # The transcript.
@@ -335,7 +395,7 @@ transcript=$cache/logs/$(ls "$cache/logs")
 case $transcript in *-run.log) ;; *) fail "transcript not named for the run: $transcript" ;; esac
 [ "$(stat -c %a "$transcript")" = 600 ] || fail "transcript is not private"
 grep -q 'check serial: ABC123' "$transcript" || fail "transcript lacks the serial check"
-grep -q 'choice: phosh' "$transcript" || fail "transcript lacks the interface choice"
+grep -q 'choice: backup' "$transcript" || fail "transcript lacks the backup choice"
 grep -q 'outcome: finished' "$transcript" || fail "transcript lacks the outcome"
 
 # Cached files are re-hashed, never trusted.
@@ -351,13 +411,21 @@ grep -q 'download nura-boot.img.xz: ' "$root/out" || fail "a damaged download wa
 
 # A phone on slot b is read as it is.
 fresh_cache
-FAKE_SUFFIX=_b FAKE_SLOT=b run "$choice"
+FAKE_SUFFIX=_b FAKE_SLOT=b run "$confirmations"
 [ "$rc" = 0 ] || fail "slot b run exited $rc"
 
 # CRLF line endings from adb shell are handled.
 fresh_cache
-FAKE_CRLF=1 run "$choice"
+FAKE_CRLF=1 run "$confirmations"
 [ "$rc" = 0 ] || fail "CRLF adb output exited $rc"
+
+# ... also with a path over 100 bytes, which the tar writes a long-name entry for.
+longdir=$root/sdcard/$(printf 'd%.0s' $(seq 60))/$(printf 'e%.0s' $(seq 60))
+mkdir -p "$longdir" && echo hi > "$longdir/f"
+NURA_INSTALL_CACHE=$root/cache2 run "$confirmations"
+[ "$rc" = 0 ] || fail "the run with a long path exited $rc"
+[ "$(planned "$root/cache2")" = "$(stat -c %s "$root"/cache2/backups/ABC123/backup-*/sdcard.tar)" ] || fail "the planned tar length $(planned "$root/cache2") differs from the stream with a long path"
+rm -rf "$root/sdcard/ddd"* "$root/cache2"
 
 ## Arguments
 
@@ -373,14 +441,15 @@ run '' --help
 
 stop_fresh() { # name, message: a stop before the phone is written to
   fresh_cache
-  run "$choice"
+  run "$confirmations"
   refused "$1" "$2"
   no_writes "$1"
 }
-stop_early() { # a failed Preflight check: the run stops before it summarizes
+stop_early() { # a failed Preflight check: no confirmation was asked, nothing was backed up
   stop_fresh "$@"
   grep -q 'Not ready: ' "$root/out" || fail "$1: no verdict"
-  ! grep -q 'Summarize' "$root/out" || fail "$1: went on to the next section"
+  no_backup "$1"
+  ! grep -q 'Confirm what is lost' "$root/out" || fail "$1: went on to the next section"
 }
 FAKE_ACCOUNTS=1 stop_early "signed-in account" 'accounts are signed in'
 FAKE_LEVEL=49 stop_early "low battery" 'battery is at 49%'
@@ -393,38 +462,69 @@ FAKE_ADB=unauthorized stop_early "unauthorized phone" 'RSA'
 FAKE_ADB=offline stop_early "offline phone" 'adb lists the phone as offline'
 FAKE_ADB_EXTRA=1 stop_early "two phones over adb" '2 adb devices are connected'
 
-## The interface choice: a word that is offered, or `stop`
+## Typed confirmations: each is required, in order, before any backup or write
 
-choice_stop() { # name, input
+confirmation_stop() { # name, input
   fresh_cache
   run "$2"
   [ "$rc" = 1 ] || fail "$1 exited $rc"
+  no_backup "$1"
   no_writes "$1"
 }
-choice_stop "end of input at the interface choice" ''
-choice_stop "stop at the interface choice" 'stop\n'
-choice_stop "an interface that is not offered" 'kde\nPhosh\n'
+confirmation_stop "end of input at Confirm" ''
+confirmation_stop "stop at Confirm" "${choice}stop\n"
+confirmation_stop "near-miss Confirm" "${choice}confirm\nCONFIRM\n"
+[ "$(grep -c 'That is not' "$root/out")" = 2 ] || fail "typo not re-asked"
+confirmation_stop "stop at the interface choice" 'stop\n'
+confirmation_stop "an interface that is not offered" 'kde\nPhosh\n'
 [ "$(grep -c 'That is not one of phosh, plasma, gnome, sxmo' "$root/out")" = 2 ] || fail "a wrong interface was not asked again"
+
+## Empty backups need a typed acknowledgement
+
+fresh_cache
+FAKE_CONTENT_EMPTY=content://sms run "$confirmations"
+[ "$rc" = 1 ] || fail "empty SMS export without acknowledgement exited $rc"
+no_writes "empty SMS"
+grep -q 'sms.txt: 0 rows' "$root/out" || fail "an empty export was not counted"
+fresh_cache
+FAKE_CONTENT_EMPTY=content://sms run "${confirmations}Confirm\n"
+[ "$rc" = 0 ] || fail "acknowledged empty SMS export exited $rc"
+fresh_cache
+FAKE_CONTENT_EMPTY=content://sms run "${confirmations}confirm\n"
+[ "$rc" = 1 ] || fail "a near-miss Confirm was accepted"
+no_writes "near-miss Confirm"
+
+## The phone's data stops
+
+FAKE_CONTENT_DENY=stderr stop_fresh "denied content query" 'failed or was denied'
+FAKE_CONTENT_DENY=stdout stop_fresh "content error as stdout" 'neither rows nor an explicit empty result'
+FAKE_CONTENT_DENY=exit stop_fresh "content query exit code" 'failed or was denied'
+FAKE_BAD_MANIFEST=1 stop_fresh "backup hash mismatch" 'does not match the phone'
+FAKE_UNREADABLE=1 stop_fresh "unreadable files" 'could not read 1 files'
+FAKE_UNREADABLE=quiet stop_fresh "unreadable files with exit 0" 'could not read 1 files'
+grep -q Permission "$root/out" && fail "unreadable file names leaked into the output"
 
 ## Preflight: read-only, runs every check it can, reports all failures together, then stops
 
 fb_only='^(devices|-s [A-Z0-9]+ getvar [a-z:_-]+)$'
-preflight_clean() { # name: nothing written to the phone
+preflight_clean() { # name: nothing written, recorded or stored for the install
   no_writes "$1"
   # only where the phone is, or (a failure after the bootloader check) the one `getvar all` read as well
   [ ! -s "$LOG" ] || [ "$(cat "$LOG")" = "devices
 $fb_all" ] || fail "$1: fastboot was asked more than the early read: $(cat "$LOG")"
+  [ ! -e "$cache/backups" ] || fail "$1: a backup directory exists"
+  no_backup "$1"
 }
 pre_fail() { # name, message(s) that must be reported
   local name=$1
   shift
   fresh_cache
-  run "$choice"
+  run "$confirmations"
   [ "$rc" = 1 ] || fail "$name exited $rc, not 1"
   for m in "$@"; do grep -qF -- "$m" "$root/out" || fail "$name not reported as: $m"; done
   grep -q '^Not ready: ' "$root/out" || fail "$name gave no verdict"
   grep -q 'Preflight not ready' "$root/out" || fail "$name did not stop at the Preflight"
-  ! grep -q 'Summarize' "$root/out" || fail "$name went on past the Preflight"
+  ! grep -q 'Confirm what is lost' "$root/out" || fail "$name went on past the Preflight"
   preflight_clean "$name"
 }
 
@@ -438,11 +538,11 @@ make_index "$fp6_images"' |= (if (.name | endswith("-boot.img.xz") | not) then .
 pre_fail "a download that does not hash to Nura's index" "nura-rootfs.img.xz does not match Nura's index"
 grep -q '^Not ready: 1 check failed, 0 skipped' "$root/out" || fail "wrong count of failures: $(grep '^Not ready' "$root/out")"
 [ "$(sed -n '/^What each one means/,$p' "$root/out" | grep -c '^  - ')" = 1 ] || fail "not every failure is explained"
-grep -q 'Step 8 of 9 .*Find, download and verify the images' "$root/out" || fail "the Preflight did not reach its last step"
+grep -q 'Step 8 of 11 .*Find, download and verify the images' "$root/out" || fail "the Preflight did not reach its last step"
 make_index
-# The bootloader is read first, before any download: every wrong answer is reported at once, then the run stops.
+# The bootloader is read first, before any download or backup: every wrong answer is reported at once, then the run stops.
 fresh_cache
-FAKE_PSIZE_MISSING=boot_a FAKE_UNLOCKED=no FAKE_FB_BATTERY=no run "$choice"
+FAKE_PSIZE_MISSING=boot_a FAKE_UNLOCKED=no FAKE_FB_BATTERY=no run "$confirmations"
 [ "$rc" = 1 ] || fail "a wrong bootloader exited $rc"
 for m in 'no value for `getvar partition-size:boot_a`' 'unlocked: no' 'battery-soc-ok: no'; do
   grep -qF -- "$m" "$root/out" || fail "the early bootloader check did not report: $m"
@@ -450,23 +550,24 @@ done
 grep -q '^Not ready: 3 checks failed' "$root/out" || fail "wrong count after the bootloader check: $(grep '^Not ready' "$root/out")"
 ! grep -q 'Restart into Android' "$root/out" || fail "the owner was sent back to Android after a failed bootloader check"
 [ ! -e "$cache/downloads" ] || fail "something was downloaded before the bootloader was checked"
+no_backup "a failed bootloader check"
 no_writes "a failed bootloader check"
 # A phone that is not on Android needs the owner first: the run waits for it in a step of its own.
 fresh_cache
-FAKE_ADB_AFTER=1 NURA_INSTALL_WAIT_SECONDS=10 run "$choice"
+FAKE_ADB_AFTER=1 NURA_INSTALL_WAIT_SECONDS=10 run "$confirmations"
 [ "$rc" = 0 ] || fail "the run that waited for the phone exited $rc"
-[ "$(sections_of "$root/out")" = "[Preflight] 1/10 2/10 3/10 4/10 5/10 6/10 7/10 8/10 9/10 [Finish] 10/10" ] || fail "sections with the wait: $(sections_of "$root/out")"
-grep -q '^== Step 2 of 10 · YOU: Connect the phone with USB debugging$' "$root/out" || fail "no step to connect the phone"
+[ "$(sections_of "$root/out")" = "[Preflight] 1/12 2/12 3/12 4/12 5/12 6/12 7/12 8/12 9/12 [Prepare] 10/12 11/12 [Finish] 12/12" ] || fail "sections with the wait: $(sections_of "$root/out")"
+grep -q '^== Step 2 of 12 · YOU: Connect the phone with USB debugging$' "$root/out" || fail "no step to connect the phone"
 grep -q '^  \.\.\. waiting for the phone over adb (up to 10 s)' "$root/out" || fail "the wait for adb was not named"
 # A YOU step ends when the phone shows its result: the restart step stays open until the phone is back over adb.
 fresh_cache
-FAKE_ADB_BACK_AFTER=2 NURA_INSTALL_WAIT_SECONDS=20 run "$choice"
+FAKE_ADB_BACK_AFTER=2 NURA_INSTALL_WAIT_SECONDS=20 run "$confirmations"
 [ "$rc" = 0 ] || fail "the run that waited for the phone to come back exited $rc"
 awk '
-  /^== Step 7 of 9 · YOU: Restart into/ { in5 = 1; next }
-  /^== Step 8 of 9/ { in5 = 0 }
+  /^== Step 7 of 11 · YOU: Restart into/ { in5 = 1; next }
+  /^== Step 8 of 11/ { in5 = 0 }
   in5 && /waiting for the phone over adb/ { waited = 1 }
-  in5 && /^  Step 7 of 9 done/ { done5 = $0 }
+  in5 && /^  Step 7 of 11 done/ { done5 = $0 }
   END { if (!waited || done5 ~ / 0\.[0-9] s$/) { print "waited=" waited " done=" done5; exit 1 } }' "$root/out" || fail "the restart step ended before the phone was back over adb"
 fresh_cache
 run "$choice"
@@ -515,15 +616,15 @@ FAKE_FB_STATE=adb fb_fail "a device that is not in fastboot" 'not fastboot'
 FAKE_FB_NOPERM=1 fb_fail "a device without permission" 'no permission'
 FAKE_DEVICES_FAIL=1 fb_fail "failed fastboot devices" 'fastboot devices` failed'
 fresh_cache
-FAKE_FB_SERIAL=XYZ789 run "$choice"
+FAKE_FB_SERIAL=XYZ789 run "$confirmations"
 refused "wrong serial after the adb phase" 'is XYZ789, not ABC123'
 
-## Menus read only a terminal; without the piped-input allowance nothing starts
+## Gates and confirmations read only a terminal; without the piped-input allowance nothing starts
 
 fresh_cache
-NURA_INSTALL_ALLOW_PIPED_INPUT= run "$choice"
+NURA_INSTALL_ALLOW_PIPED_INPUT= run "$confirmations"
 refused "piped input" 'interactive terminal'
-! grep -q 'getprop' "$ADB_LOG" || fail "a run without a terminal went on to check the phone"
+! grep -q 'getprop\|exec-out' "$ADB_LOG" || fail "a run without a terminal went on to check the phone"
 
 ## Nura's index
 
@@ -540,7 +641,7 @@ make_index "$fp6_images"' |= (if (.name | endswith("-boot.img.xz")) then .sha256
 rm -rf "$cache/downloads"
 again
 refused "a wrong sha256 in the index" "nura-boot.img.xz does not match Nura's index"
-! grep -q 'Summarize' "$root/out" || fail "the run went on with a download that did not verify"
+! grep -q 'Confirm what is lost' "$root/out" || fail "the run went on with a download that did not verify"
 make_index
 # The newest build of the chosen interface in the newest release is the one installed, and it is shown.
 again
@@ -559,7 +660,7 @@ again
 [ "$rc" = 0 ] || fail "the older build exited $rc"
 # The interfaces offered are the ones the index lists for the phone; unknown ones are listed by name.
 make_index '.releases |= map(.devices |= map(if .name == "fairphone-fp6" then .interfaces += [(.interfaces[] | select(.name == "phosh") | .name = "lomiri")] | .interfaces |= map(select(.name != "sxmo-de-sway")) else . end))'
-run "sxmo\nlomiri\n"
+run "sxmo\nlomiri\nConfirm\nbackup\n"
 [ "$rc" = 0 ] || fail "an interface the index adds exited $rc"
 grep -q '^  lomiri ' "$root/out" || fail "an unknown interface was not listed by name"
 ! grep -q '^  sxmo ' "$root/out" || fail "an interface the index lacks was offered"
@@ -609,13 +710,13 @@ refused "concurrent run" 'another nura-install'
 ## Terminal behaviour: spinner on a terminal only, progress in the transcript, Ctrl-C, typed-ahead input
 
 fresh_cache
-NURA_INSTALL_PROGRESS_SECONDS=1 FAKE_SLOW_BATTERY=3 run "$choice"
-[ "$rc" = 0 ] || fail "slow battery run exited $rc"
-plain_output "slow battery" "$root/out"
+NURA_INSTALL_PROGRESS_SECONDS=1 FAKE_SLOW_TAR=3 run "$confirmations"
+[ "$rc" = 0 ] || fail "slow backup exited $rc"
+plain_output "slow backup" "$root/out"
 transcript=$cache/logs/$(ls "$cache/logs")
-[ "$(grep -c -E '^  \.\.\. battery: still running, ' "$transcript")" -ge 2 ] \
-  || fail "the transcript has no periodic progress lines for the slow check: $(grep '\.\.\.' "$transcript")"
-! grep -q -E '^  \.\.\. battery: still running' "$root/out" || fail "progress lines went to a pipe"
+[ "$(grep -c -E '^  \.\.\. copy /sdcard: .* of 4\.5 KiB \([0-9]+%\)' "$transcript")" -ge 2 ] \
+  || fail "the transcript has no periodic progress lines for the slow stream: $(grep '\.\.\.' "$transcript")"
+! grep -q -E '^  \.\.\. copy /sdcard: ' "$root/out" || fail "progress lines went to a pipe"
 ! LC_ALL=C grep -q -P '\xE2[\xA0-\xA3][\x80-\xBF]|\x1b' "$transcript" || fail "a spinner frame is in the transcript"
 
 # Menus on a terminal: arrow keys and Enter on a pty. Enter has a security delay of 3 s after a menu is drawn and 1 s after each move
@@ -646,7 +747,7 @@ pty_end() { rc=0; wait_pty; exec 7>&-; }
 chose() { grep -qF -- "  chosen: $1" "$root/pty" || fail "the menu did not choose: $1"; }
 
 # The security delays: Enter is ignored while the countdown runs (and dropped, not queued), with no cursor, and for a moment after a move.
-pty_begin FAKE_SLOW_BATTERY=2
+pty_begin FAKE_SLOW_TAR=2
 menu_at 'choose'
 printf '%s' "$ENTER" >&7
 sleep 1.9
@@ -663,20 +764,24 @@ grep -q 'chosen:' "$root/pty" && fail "Enter right after a move of the cursor ch
 sleep 0.9
 printf '%s' "$ENTER" >&7
 menu_at 'chosen: Phosh'
+menu_at 'The screen lock is off (confirm)'
+pick_with "$DOWN"
+menu_at 'Back up the phone'
+pick_with "$DOWN"
 pty_end
 [ "$rc" = 0 ] || fail "the run on a terminal exited $rc"
 no_writes "the run on a terminal"
 # On a terminal the spinner shows on screen and never reaches the transcript.
-LC_ALL=C grep -q -P '\r\x1b\[K  \xE2[\xA0-\xA3][\x80-\xBF] battery' "$root/pty" || fail "no spinner on the terminal"
+LC_ALL=C grep -q -P '\r\x1b\[K  \xE2[\xA0-\xA3][\x80-\xBF] co[^ ]*  \xE2\x96[\x88\x91]' "$root/pty" || fail "no bar on the terminal"
 grep -q "$(printf '\033\[K')" "$root/pty" || fail "the spinner was not erased in place"
 transcript=$cache/logs/$(ls "$cache/logs")
 [ -z "$(tr -d -c '\r\033' < "$transcript")" ] || fail "escape bytes in the transcript of a terminal run"
 ! LC_ALL=C grep -q -P '\xE2[\xA0-\xA3][\x80-\xBF]' "$transcript" || fail "a spinner frame is in the transcript of a terminal run"
-grep -qE '^  \[ ok \] battery: ' "$transcript" || fail "the finished line is missing from the transcript"
+grep -qE '^  \[ ok \] copy /sdcard: ' "$transcript" || fail "the finished line is missing from the transcript"
 grep -qE '^choice: phosh \(menu open [0-9.]+ s\)$' "$transcript" || fail "the transcript lacks the choice and how long the menu was open"
 # The terminal title (OSC 2) shows the step and its clocks on a terminal, ends with the outcome, and is never in the transcript.
-LC_ALL=C grep -aq -P '\x1b\]2;[^\x07]* nura 2/9 Check the phone over adb[^\x07]* · [0-9]+:[0-9]{2} \([0-9]+:[0-9]{2}\)\x07' "$root/pty" || fail "no working title on the terminal: $(LC_ALL=C grep -a -o -P '\x1b\]2;[^\x07]*' "$root/pty" | head -3 | cat -v)"
-LC_ALL=C grep -aq -P '\x1b\]2;⏸ nura 6/9 choose an option · ' "$root/pty" || fail "no waiting title at the gate"
+LC_ALL=C grep -aq -P '\x1b\]2;[^\x07]* nura 10/11 Back up the phone[^\x07]* · [0-9]+:[0-9]{2} \([0-9]+:[0-9]{2}\)\x07' "$root/pty" || fail "no working title on the terminal: $(LC_ALL=C grep -a -o -P '\x1b\]2;[^\x07]*' "$root/pty" | head -3 | cat -v)"
+LC_ALL=C grep -aq -P '\x1b\]2;⏸ nura 9/11 choose an option · ' "$root/pty" || fail "no waiting title at the gate"
 ! LC_ALL=C grep -aq -P '\x1b\]2;' "$transcript" || fail "a title escape is in the transcript"
 
 # The first security delay outlasts the one after a move: Enter after the cursor moved long ago is still ignored.
@@ -690,8 +795,10 @@ grep -q 'chosen:' "$root/pty" && fail "Enter within the first security delay sel
 sleep 0.8
 printf '%s' "$ENTER" >&7
 menu_at 'chosen: Phosh'
+menu_at 'The screen lock is off (confirm)'
+pick_with "$UP"
 pty_end
-[ "$rc" = 0 ] || fail "the first-security-delay case exited $rc"
+[ "$rc" = 1 ] || fail "the first-security-delay case exited $rc"
 
 # Up first puts the cursor on Stop; arrows move the cursor during the first lock; Ctrl-C works during it.
 pty_begin
@@ -701,8 +808,6 @@ pty_end
 [ "$rc" = 1 ] || fail "Up then Enter at the interface menu exited $rc"
 chose 'Stop the run'
 no_writes "Stop at the interface menu"
-# The terminal title ends with the outcome.
-LC_ALL=C grep -aq -P '\x1b\]2;✗ nura stopped at 6/9 · [0-9]+:[0-9]{2}\x07' "$root/pty" || fail "no closing title on the terminal"
 pty_begin
 menu_at 'choose'
 printf '%s' "$DOWN" >&7
@@ -714,12 +819,47 @@ pty_end
 grep -q 'chosen: Stop the run' "$root/pty" || fail "Ctrl-C during the lock did not stop the menu"
 no_writes "Ctrl-C during the lock"
 
+# Skipping the backup: a menu before anything is read, then a second one that gives the data up; no partial files.
+pty_begin
+menu_at 'choose'
+pick_with "$DOWN"
+menu_at 'The screen lock is off (confirm)'
+pick_with "$DOWN"
+menu_at 'Skip the backup'
+pick_with "$DOWN$DOWN"
+menu_at 'Go on without a backup (the data is gone for good)'
+pick_with "$DOWN"
+pty_end
+[ "$rc" = 0 ] || fail "going on without a backup exited $rc"
+! grep -q 'streaming the phone' "$root/pty" || fail "the phone was read although the backup was skipped"
+[ ! -e "$cache/backups" ] || fail "a backup directory exists although no backup was taken"
+grep -q "NO BACKUP WAS TAKEN: nothing of Android's data is saved" "$root/pty" || fail "the summary does not say no backup was taken"
+grep -q 'no backup taken: skipped' "$cache/logs/"* || fail "the transcript does not say no backup was taken"
+# ... and Stop at the second menu ends the run before anything is written.
+pty_begin
+menu_at 'choose'
+pick_with "$DOWN"
+menu_at 'The screen lock is off (confirm)'
+pick_with "$DOWN"
+menu_at 'Skip the backup'
+pick_with "$DOWN$DOWN"
+menu_at 'Go on without a backup (the data is gone for good)'
+pick_with "$UP"
+pty_end
+[ "$rc" = 1 ] || fail "skip then Stop exited $rc"
+no_writes "skip then Stop"
+[ ! -e "$cache/backups" ] || fail "skip then Stop made a backup directory"
+# The terminal title ends with the outcome.
+LC_ALL=C grep -aq -P '\x1b\]2;✗ nura stopped at 9/11 · [0-9]+:[0-9]{2}\x07' "$root/pty" || fail "no closing title on the terminal"
+
 # Ctrl-C says nothing was written and exits 130.
-interrupt_during() { # name, stdin, expected text, text to wait for; the slow check is running
+interrupt_during() { # name, stdin, expected text, text to wait for; the slow stage is running
   fresh_cache
   rm -f "$root/out" "$COUNT"
   : > "$root/out"
-  printf '%b' "$2" | FAKE_SLOW_BATTERY=8 "$tool" > "$root/out" 2>&1 &
+  local battery=0
+  [ "$4" != '... checking battery' ] || battery=8
+  printf '%b' "$2" | FAKE_SLOW_BATTERY=$battery FAKE_SLOW_TAR=8 "$tool" > "$root/out" 2>&1 &
   local pid=$!
   wait_for "$root/out" "$4"
   kill -INT "$pid"
@@ -732,5 +872,6 @@ interrupt_during() { # name, stdin, expected text, text to wait for; the slow ch
   grep -q 'outcome: interrupted' "$cache/logs/"* || fail "$1: the transcript lacks the outcome"
 }
 interrupt_during "Ctrl-C in the Preflight" '' 'Nothing was written to the phone.' '... checking battery'
+interrupt_during "Ctrl-C during the backup" "$confirmations" 'Nothing was written to the phone.' 'streaming the phone'
 
-echo "PASS: nura-install checks the phone, finds Nura's build, and stops on every doubt"
+echo "PASS: nura-install checks the phone, backs it up, and stops on every doubt"
