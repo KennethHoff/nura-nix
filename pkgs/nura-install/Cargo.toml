@@ -1,0 +1,18 @@
+[package]
+name = "nura-install"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Guarded Nura install for phones with an unlocked bootloader"
+license = "MIT"
+publish = false
+
+[features]
+# Environment overrides and the piped-input allowance the flake check needs; never in the shipped binary.
+test-hooks = []
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+lto = true
