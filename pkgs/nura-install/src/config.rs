@@ -1,4 +1,4 @@
-//! Where the cache, tools and limits come from. The shipped binary takes them from build-time
+//! Where the index address, cache, tools and limits come from. The shipped binary takes them from build-time
 //! values and constants; only a `test-hooks` build reads `NURA_INSTALL_*` from the environment.
 use crate::fail::Result;
 use std::ffi::OsString;
@@ -23,6 +23,12 @@ fn hook_number(var: &str) -> Result<Option<u64>> {
                 .map_err(|_| format!("{var} must be a number, not {v:?}").into())
         })
         .transpose()
+}
+
+pub fn nura_index() -> String {
+    hook("NURA_INSTALL_NURA_INDEX")
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "https://images.nura.eco/bpo/index.json".to_string())
 }
 
 /// The cache directory the build set, else the per-user data directory:
@@ -58,6 +64,32 @@ pub fn adb_bin() -> OsString {
 
 pub fn fastboot_bin() -> OsString {
     tool("NURA_INSTALL_FASTBOOT", "fastboot")
+}
+
+pub fn curl_bin() -> OsString {
+    tool("NURA_INSTALL_CURL", "curl")
+}
+
+pub fn allow_file_urls() -> bool {
+    hook("NURA_INSTALL_ALLOW_FILE_URLS").is_some_and(|v| v == "1")
+}
+
+pub fn allow_piped_input() -> bool {
+    hook("NURA_INSTALL_ALLOW_PIPED_INPUT").is_some_and(|v| v == "1")
+}
+
+/// How long Enter is ignored after a menu is drawn; fixed in the shipped build.
+pub fn security_delay() -> Result<Duration> {
+    Ok(Duration::from_millis(
+        hook_number("NURA_INSTALL_SECURITY_DELAY_MS")?.unwrap_or(3000),
+    ))
+}
+
+/// How long Enter is ignored after each move of a menu's cursor; fixed in the shipped build.
+pub fn security_delay_after_move() -> Result<Duration> {
+    Ok(Duration::from_millis(
+        hook_number("NURA_INSTALL_SECURITY_DELAY_AFTER_MOVE_MS")?.unwrap_or(1000),
+    ))
 }
 
 pub fn needed_gib() -> Result<u64> {
@@ -106,18 +138,30 @@ mod tests {
     #[test]
     fn exported_overrides_do_nothing_in_the_shipped_build() {
         for var in [
+            "NURA_INSTALL_NURA_INDEX",
+            "NURA_INSTALL_SECURITY_DELAY_MS",
+            "NURA_INSTALL_SECURITY_DELAY_AFTER_MOVE_MS",
             "NURA_INSTALL_CACHE",
             "NURA_INSTALL_ADB",
             "NURA_INSTALL_FASTBOOT",
+            "NURA_INSTALL_CURL",
             "NURA_INSTALL_NEEDED_GIB",
             "NURA_INSTALL_WAIT_SECONDS",
         ] {
             std::env::set_var(var, "1");
         }
+        std::env::set_var("NURA_INSTALL_ALLOW_FILE_URLS", "1");
+        std::env::set_var("NURA_INSTALL_ALLOW_PIPED_INPUT", "1");
         assert_eq!(adb_bin(), "adb");
         assert_eq!(fastboot_bin(), "fastboot");
+        assert_eq!(curl_bin(), "curl");
+        assert!(!allow_file_urls());
+        assert!(!allow_piped_input());
+        assert_eq!(security_delay().unwrap(), Duration::from_secs(3));
+        assert_eq!(security_delay_after_move().unwrap(), Duration::from_secs(1));
         assert_eq!(needed_gib().unwrap(), 12);
         assert_eq!(wait_limit().unwrap(), None);
+        assert_eq!(nura_index(), "https://images.nura.eco/bpo/index.json");
         assert_ne!(cache_dir().ok(), Some(PathBuf::from("1")));
     }
 }

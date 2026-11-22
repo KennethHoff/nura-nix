@@ -108,6 +108,11 @@ pub fn read_all(serial: &Serial) -> Result<Vars> {
     Ok(vars)
 }
 
+/// The product the bootloader reports.
+pub fn product(vars: &Vars) -> Result<String> {
+    vars.once("product")
+}
+
 fn parse_devices(text: &str) -> Result<Vec<Serial>> {
     let mut serials = Vec::new();
     for line in text.lines() {

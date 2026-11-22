@@ -4,26 +4,31 @@ mod config;
 mod fail;
 mod fastboot;
 mod host;
+mod images;
 mod log;
+mod nura;
 mod phone;
 mod preflight;
+mod prompt;
 mod render;
 mod signals;
 mod steps;
 mod ui;
 
 use fail::{Fail, Result};
+use nura::Offer;
 use preflight::{Facts, Report};
+use prompt::Entry;
 use std::path::Path;
 use std::process::ExitCode;
 
 const USAGE: &str = "Usage: nura-install
 
-Takes no arguments: it reads the phone over adb and fastboot and checks that it can take Nura.
-Nothing is written to the phone.
+Takes no arguments: it checks the phone and finds Nura's build for it. Nothing is written to the
+phone.
 
-  Android over adb                check the phone and its bootloader, in two sections (Preflight,
-                                  Finish)
+  Android over adb                check the phone, find Nura's build and its images, in two
+                                  sections (Preflight, Finish)
   -h, --help                      this text
 
 Exit codes:
@@ -44,6 +49,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> std::result::Result<boo
 
 /// Ctrl-C, hang-up or terminate: says that nothing was written to the phone, then stops.
 pub fn interrupted() -> ! {
+    prompt::restore_terminal();
     ui::stop_live();
     ui::kill_child();
     ui::end_step();
@@ -102,8 +108,9 @@ fn run() -> Result<()> {
     host::ensure_cache(&cache, euid)?;
     log::open(&cache, &host::timestamp()?, "run")?;
     let _lock = host::lock(&cache)?;
+    prompt::require_terminal()?;
     match adb::devices() {
-        Ok(devices) => read_phone(&cache, devices.is_empty()),
+        Ok(devices) => install_fresh(&cache, devices.is_empty()),
         Err(Fail::Stop(msg)) => unreadable_surroundings(&cache, msg),
     }
 }
@@ -124,8 +131,29 @@ fn the_run_lost_track<T>() -> Result<T> {
     Err("every check passed, but a value the run needs is missing; this is a bug in nura-install, nothing was written".into())
 }
 
-fn read_phone(cache: &Path, wait: bool) -> Result<()> {
-    ui::plan(6 + u32::from(wait));
+/// The owner's pick among the interfaces Nura builds for the phone; only its images are downloaded.
+fn choose_interface(offers: Vec<Offer>) -> Result<Offer> {
+    ui::step(&steps::CHOOSE_UI);
+    let entries: Vec<Entry> = offers
+        .iter()
+        .map(|o| Entry {
+            word: o.word.clone(),
+            label: o.label.clone(),
+            about: if o.about.is_empty() {
+                o.build.label()
+            } else {
+                o.about.clone()
+            },
+        })
+        .collect();
+    let picked = prompt::menu(&entries)?.ok_or("stopped; nothing was written to the phone")?;
+    offers.into_iter().nth(picked).ok_or_else(|| {
+        "the chosen interface is not in the list; this is a bug in nura-install".into()
+    })
+}
+
+fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
+    ui::plan(9 + u32::from(wait));
     ui::section("Preflight");
     ui::step(&steps::CHECK_COMPUTER);
     let mut report = Report::new();
@@ -155,14 +183,24 @@ fn read_phone(cache: &Path, wait: bool) -> Result<()> {
     fastboot::wait_for_phone()?;
     ui::step(&steps::CHECK_BOOTLOADER);
     let mut bootloader = Report::new();
-    preflight::fastboot_side(&mut bootloader, &serial, slot);
+    let early = preflight::fastboot_side(&mut bootloader, &serial, slot);
+    ui::step(&steps::FIND_BUILDS);
+    let mut finding = Report::new();
+    let offers = preflight::builds(&mut finding, cache, early.as_ref());
     bootloader.conclude("nura-install")?;
+    finding.conclude("nura-install")?;
+    let (Some(_), Some(offers)) = (early, offers) else {
+        return the_run_lost_track();
+    };
+    let offer = choose_interface(offers)?;
 
     ui::step(&steps::RESTART_TO_ANDROID);
     let mut report = Report::new();
     let found_phone = preflight::find_phone(&mut report);
     let again = preflight::adb_side(&mut report, found_phone);
     preflight::same_phone(&mut report, &facts, &again);
+    ui::step(&steps::FIND_IMAGES);
+    preflight::images(&mut report, &offer.build, cache);
     report.conclude("nura-install")?;
     ui::section("Finish");
     ui::step(&steps::SUMMARY);

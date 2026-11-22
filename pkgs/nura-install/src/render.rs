@@ -1,8 +1,9 @@
-//! Pure text for the terminal: durations, finished-step lines, the spinner line and counts.
+//! Pure text for the terminal: durations, finished-step lines, the spinner line, bars and counts.
 //! No clock, no I/O: every function maps values to bytes so the tests can compare them exactly.
 
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const WIDTH: usize = 64;
+const BAR_CELLS: u128 = 24;
 const CLEAR_LINE: &str = "\r\x1b[K";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +21,13 @@ impl Mark {
             Mark::Skip => "[skip]",
         }
     }
+}
+
+/// What a running step has measured: a real count, with its total only when that is truly known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Meter {
+    None,
+    Bytes { done: u64, total: Option<u64> },
 }
 
 /// `x.y s` under ten seconds, whole seconds up to a minute, then `m:ss`, and `h:mm:ss` from an hour.
@@ -47,11 +55,12 @@ pub fn clock(ms: u64) -> String {
 
 /// What the terminal title says.
 pub enum Title<'a> {
-    /// The tool works.
+    /// The tool works; `pct` only where the screen shows a bar.
     Working {
         n: u32,
         total: u32,
         label: &'a str,
+        pct: Option<u64>,
         step_ms: u64,
         run_ms: u64,
     },
@@ -81,11 +90,13 @@ pub fn title(state: &Title, tick: usize) -> String {
             n,
             total,
             label,
+            pct,
             step_ms,
             run_ms,
         } => {
+            let pct = pct.map_or(String::new(), |p| format!(" {p}%"));
             format!(
-                "{frame} nura {n}/{total} {label} · {} ({})",
+                "{frame} nura {n}/{total} {label}{pct} · {} ({})",
                 clock(step_ms),
                 clock(run_ms)
             )
@@ -175,10 +186,75 @@ pub fn run_end(ms: u64, outcome: &str) -> String {
     format!("done in {}: {outcome}", duration(ms))
 }
 
-/// The in-place line of a running step: clears the line, then frame, label and elapsed time.
+pub fn percent(done: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 100;
+    }
+    (u128::from(done.min(total)) * 100 / u128::from(total)) as u64
+}
+
+/// 24 cells, filled in proportion to `done` of `total`.
+pub fn bar(done: u64, total: u64) -> String {
+    let filled = if total == 0 {
+        BAR_CELLS
+    } else {
+        u128::from(done.min(total)) * BAR_CELLS / u128::from(total)
+    };
+    (0..BAR_CELLS)
+        .map(|i| if i < filled { '█' } else { '░' })
+        .collect()
+}
+
+fn rate(done: u64, elapsed_ms: u64) -> Option<String> {
+    (done > 0 && elapsed_ms > 0).then(|| {
+        format!(
+            "{}/s",
+            human((u128::from(done) * 1000 / u128::from(elapsed_ms)) as u64)
+        )
+    })
+}
+
+/// What the meter says. With `with_bar` a known total gets the bar, as on the screen; without it the
+/// same facts are words, for the transcript.
+pub fn meter_text(meter: Meter, elapsed_ms: u64, with_bar: bool) -> String {
+    match meter {
+        Meter::None => String::new(),
+        Meter::Bytes {
+            done,
+            total: Some(total),
+        } if done <= total => {
+            let pct = percent(done, total);
+            let mut text = if with_bar {
+                format!(
+                    "{}  {} / {}  {pct}%",
+                    bar(done, total),
+                    human(done),
+                    human(total)
+                )
+            } else {
+                format!("{} of {} ({pct}%)", human(done), human(total))
+            };
+            if let Some(r) = rate(done, elapsed_ms) {
+                text.push_str(if with_bar { "  " } else { ", " });
+                text.push_str(&r);
+            }
+            text
+        }
+        Meter::Bytes { done, .. } => match rate(done, elapsed_ms) {
+            Some(r) => format!("{}, {r}", human(done)),
+            None => human(done),
+        },
+    }
+}
+
+/// The in-place line of a running step: clears the line, then frame, label, meter and elapsed time.
 /// A line wider than `cols` loses the end of its label, since a wrapped line cannot be redrawn.
-pub fn spinner(tick: usize, label: &str, elapsed_ms: u64, cols: usize) -> String {
-    let tail = format!("  {}", duration(elapsed_ms));
+pub fn spinner(tick: usize, label: &str, meter: &str, elapsed_ms: u64, cols: usize) -> String {
+    let tail = if meter.is_empty() {
+        format!("  {}", duration(elapsed_ms))
+    } else {
+        format!("  {meter}  {}", duration(elapsed_ms))
+    };
     let frame = FRAMES[tick % FRAMES.len()];
     let room = cols.saturating_sub(4 + tail.chars().count() + 1);
     let label = if label.chars().count() > room {
@@ -195,8 +271,12 @@ pub fn clear() -> &'static str {
 }
 
 /// The plain line the transcript gets now and then for a long step.
-pub fn progress_line(label: &str, elapsed_ms: u64) -> String {
-    format!("  ... {label}: still running, {}", duration(elapsed_ms))
+pub fn progress_line(label: &str, meter: &str, elapsed_ms: u64) -> String {
+    if meter.is_empty() {
+        format!("  ... {label}: still running, {}", duration(elapsed_ms))
+    } else {
+        format!("  ... {label}: {meter}, {}", duration(elapsed_ms))
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +319,7 @@ mod tests {
             n: 2,
             total: 14,
             label: "Check the phone over adb",
+            pct: None,
             step_ms: 12_000,
             run_ms: 41_000,
         };
@@ -246,6 +327,15 @@ mod tests {
             title(&working, 1),
             "⠙ nura 2/14 Check the phone over adb · 0:12 (0:41)"
         );
+        let bar = Title::Working {
+            n: 5,
+            total: 14,
+            label: "Back up",
+            pct: Some(42),
+            step_ms: 312_000,
+            run_ms: 723_000,
+        };
+        assert_eq!(title(&bar, 0), "⠋ nura 5/14 Back up 42% · 5:12 (12:03)");
         let you = Title::Waiting {
             n: 7,
             total: 14,
@@ -351,18 +441,82 @@ mod tests {
     }
 
     #[test]
+    fn the_bar_has_24_cells_filled_in_proportion() {
+        assert_eq!(bar(0, 100), "░".repeat(24));
+        assert_eq!(bar(33, 100), format!("{}{}", "█".repeat(7), "░".repeat(17)));
+        assert_eq!(bar(100, 100), "█".repeat(24));
+        assert_eq!(bar(500, 100), "█".repeat(24));
+        assert_eq!(bar(0, 0), "█".repeat(24));
+    }
+
+    #[test]
+    fn a_known_total_shows_bar_quantity_percent_and_rate() {
+        let m = Meter::Bytes {
+            done: 100 << 20,
+            total: Some(300 << 20),
+        };
+        assert_eq!(
+            meter_text(m, 10_000, true),
+            format!(
+                "{}{}  100.0 MiB / 300.0 MiB  33%  10.0 MiB/s",
+                "█".repeat(8),
+                "░".repeat(16)
+            )
+        );
+        assert_eq!(
+            meter_text(m, 10_000, false),
+            "100.0 MiB of 300.0 MiB (33%), 10.0 MiB/s"
+        );
+    }
+
+    #[test]
+    fn a_stream_past_its_total_drops_to_the_plain_count_never_over_100_percent() {
+        let past = Meter::Bytes {
+            done: 301 << 20,
+            total: Some(300 << 20),
+        };
+        assert_eq!(meter_text(past, 10_000, true), "301.0 MiB, 30.1 MiB/s");
+        let exact = Meter::Bytes {
+            done: 300 << 20,
+            total: Some(300 << 20),
+        };
+        assert_eq!(
+            meter_text(exact, 10_000, true),
+            format!(
+                "{}  300.0 MiB / 300.0 MiB  100%  30.0 MiB/s",
+                "█".repeat(24)
+            )
+        );
+    }
+
+    #[test]
+    fn an_unknown_total_shows_only_what_was_counted() {
+        let bytes = Meter::Bytes {
+            done: 3 << 20,
+            total: None,
+        };
+        assert_eq!(meter_text(bytes, 1000, true), "3.0 MiB, 3.0 MiB/s");
+        let zero = Meter::Bytes {
+            done: 0,
+            total: None,
+        };
+        assert_eq!(meter_text(zero, 0, true), "0 bytes");
+        assert_eq!(meter_text(Meter::None, 5000, true), "");
+    }
+
+    #[test]
     fn the_spinner_rewrites_its_line_with_a_braille_frame() {
         assert_eq!(
-            spinner(0, "hashing", 1234, 80),
+            spinner(0, "hashing", "", 1234, 80),
             "\r\x1b[K  ⠋ hashing  1.2 s"
         );
         assert_eq!(
-            spinner(11, "hashing", 65_000, 80),
-            "\r\x1b[K  ⠙ hashing  1:05"
+            spinner(11, "hashing", "7 files", 65_000, 80),
+            "\r\x1b[K  ⠙ hashing  7 files  1:05"
         );
         let frames: String = (0..10)
             .map(|t| {
-                spinner(t, "x", 0, 80)
+                spinner(t, "x", "", 0, 80)
                     .trim_start_matches("\r\x1b[K  ")
                     .chars()
                     .next()
@@ -375,10 +529,10 @@ mod tests {
     #[test]
     fn a_long_label_is_cut_so_the_line_never_wraps() {
         let label = "a".repeat(100);
-        let line = spinner(0, &label, 1000, 40);
+        let line = spinner(0, &label, "3 files", 1000, 40);
         let shown = line.trim_start_matches("\r\x1b[K");
         assert!(shown.chars().count() < 40, "{shown}");
-        assert!(shown.ends_with("…  1.0 s"), "{shown}");
+        assert!(shown.ends_with("…  3 files  1.0 s"), "{shown}");
     }
 
     #[test]
@@ -389,10 +543,14 @@ mod tests {
     #[test]
     fn the_transcript_progress_line_is_plain_text() {
         assert_eq!(
-            progress_line("waiting", 30_000),
+            progress_line("tar stream", "1.0 GiB, 15.0 MiB/s", 70_000),
+            "  ... tar stream: 1.0 GiB, 15.0 MiB/s, 1:10"
+        );
+        assert_eq!(
+            progress_line("waiting", "", 30_000),
             "  ... waiting: still running, 30 s"
         );
-        assert!(!progress_line("x", 1).contains('\x1b'));
+        assert!(!progress_line("x", "y", 1).contains('\x1b'));
     }
 
     #[test]

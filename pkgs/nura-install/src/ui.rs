@@ -3,9 +3,11 @@
 //! total time, the run ends with `done in ...`, and the transcript gets the same lines plus a plain
 //! progress line now and then for long steps, never spinner frames.
 use crate::fail::Result;
-use crate::render::{self, Mark};
+use crate::render::{self, Mark, Meter};
 use crate::{config, log, signals, steps};
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread::{self, sleep};
@@ -16,9 +18,49 @@ static CONSOLE: Mutex<Console> = Mutex::new(Console::new());
 
 const FRAME_EVERY: Duration = Duration::from_millis(200);
 
+/// Where a running step's byte count comes from.
+#[derive(Clone, Debug)]
+pub enum Source {
+    /// The size of a file the command is writing.
+    FileSize(PathBuf),
+    /// How far the running command has read into a file.
+    ReadPos(PathBuf),
+}
+
+impl Source {
+    pub fn read_pos(path: &Path) -> Source {
+        Source::ReadPos(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+    }
+}
+
+/// What a running step measures; a total is given only where it is truly known.
+#[derive(Clone, Debug)]
+pub enum Gauge {
+    None,
+    Bytes { source: Source, total: Option<u64> },
+}
+
+impl Gauge {
+    pub fn written(path: &Path, total: Option<u64>) -> Gauge {
+        Gauge::Bytes {
+            source: Source::FileSize(path.to_path_buf()),
+            total,
+        }
+    }
+
+    pub fn read(path: &Path, total: Option<u64>) -> Gauge {
+        Gauge::Bytes {
+            source: Source::read_pos(path),
+            total,
+        }
+    }
+}
+
 struct Active {
     label: String,
+    sub: Option<String>,
     started: Instant,
+    gauge: Gauge,
     last_log: Instant,
 }
 
@@ -32,6 +74,7 @@ struct Console {
     step: u32,
     total: u32,
     cur: Option<&'static steps::Step>,
+    asking: Option<String>,
     title_at: Option<Instant>,
     title_tick: usize,
 }
@@ -48,6 +91,7 @@ impl Console {
             step: 0,
             total: 0,
             cur: None,
+            asking: None,
             title_at: None,
             title_tick: 0,
         }
@@ -109,6 +153,55 @@ pub fn init() {
     });
 }
 
+fn bytes_of(source: &Source) -> Option<u64> {
+    match source {
+        Source::FileSize(path) => fs::metadata(path).ok().map(|m| m.len()),
+        Source::ReadPos(path) => read_pos(CHILD.load(Ordering::Relaxed), path),
+    }
+}
+
+fn read_pos(pid: u32, path: &Path) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    for entry in fs::read_dir(format!("/proc/{pid}/fd")).ok()?.flatten() {
+        if fs::read_link(entry.path()).ok().as_deref() == Some(path) {
+            let info = fs::read_to_string(format!(
+                "/proc/{pid}/fdinfo/{}",
+                entry.file_name().to_string_lossy()
+            ))
+            .ok()?;
+            return parse_pos(&info);
+        }
+    }
+    None
+}
+
+/// The `pos:` line of /proc/<pid>/fdinfo/<fd>.
+pub fn parse_pos(text: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("pos:")?.trim().parse().ok())
+}
+
+fn meter_of(active: &Active, with_bar: bool) -> String {
+    let elapsed = ms(active.started);
+    let meter = match &active.gauge {
+        Gauge::None => Meter::None,
+        Gauge::Bytes { source, total } => Meter::Bytes {
+            done: bytes_of(source).unwrap_or(0),
+            total: *total,
+        },
+    };
+    render::meter_text(meter, elapsed, with_bar)
+}
+
+fn label_of(active: &Active) -> String {
+    match &active.sub {
+        Some(sub) => format!("{}: {sub}", active.label),
+        None => active.label.clone(),
+    }
+}
+
 /// One heartbeat: notices Ctrl-C, redraws the spinner, writes a progress line to the transcript.
 fn beat() {
     if signals::interrupted() {
@@ -121,10 +214,11 @@ fn beat() {
         return;
     };
     let elapsed = ms(active.started);
-    let label = active.label.clone();
-    let line = tty.then(|| render::spinner(c.tick, &label, elapsed, columns()));
+    let label = label_of(active);
+    let line =
+        tty.then(|| render::spinner(c.tick, &label, &meter_of(active, true), elapsed, columns()));
     let due = active.last_log.elapsed() >= config::progress_every();
-    let progress = due.then(|| render::progress_line(&label, elapsed));
+    let progress = due.then(|| render::progress_line(&label, &meter_of(active, false), elapsed));
     if let Some(line) = line {
         put(&line);
         c.live = true;
@@ -138,10 +232,12 @@ fn beat() {
     }
 }
 
-fn start(c: &mut Console, label: &str) {
+fn start(c: &mut Console, label: &str, gauge: Gauge) {
     c.active = Some(Active {
         label: label.to_string(),
+        sub: None,
         started: Instant::now(),
+        gauge,
         last_log: Instant::now(),
     });
 }
@@ -164,24 +260,67 @@ pub fn kill_child() {
     }
 }
 
-/// Shows `what` while a command runs, unless a step already shows something.
-pub struct Busy {
-    created: bool,
+/// Replaces the running step's gauge, for work that moves on to a measurable part.
+pub fn set_gauge(gauge: Gauge) {
+    if let Some(a) = lock().active.as_mut() {
+        a.gauge = gauge;
+    }
 }
 
-pub fn ensure(what: &str) -> Busy {
+/// Marks a stretch of work inside the running step (or a step of its own when none runs).
+pub struct Busy {
+    created: bool,
+    replace: bool,
+    previous: Option<(Option<String>, Gauge)>,
+}
+
+fn enter(what: &str, gauge: Gauge, replace: bool) -> Busy {
     let mut c = lock();
-    if c.active.is_some() {
-        return Busy { created: false };
+    match c.active.as_mut() {
+        Some(a) if replace => Busy {
+            created: false,
+            replace,
+            previous: Some((
+                a.sub.replace(what.to_string()),
+                std::mem::replace(&mut a.gauge, gauge),
+            )),
+        },
+        Some(_) => Busy {
+            created: false,
+            replace,
+            previous: None,
+        },
+        None => {
+            start(&mut c, what, gauge);
+            Busy {
+                created: true,
+                replace,
+                previous: None,
+            }
+        }
     }
-    start(&mut c, what);
-    Busy { created: true }
+}
+
+/// Names `what` and shows its `gauge` for as long as the guard lives.
+pub fn busy(what: &str, gauge: Gauge) -> Busy {
+    enter(what, gauge, true)
+}
+
+/// Makes sure something is shown while a command runs, without disturbing a step that already is.
+pub fn ensure(what: &str) -> Busy {
+    enter(what, Gauge::None, false)
 }
 
 impl Drop for Busy {
     fn drop(&mut self) {
+        let mut c = lock();
         if self.created {
-            finish(&mut lock());
+            finish(&mut c);
+        } else if let (true, Some((sub, gauge)), Some(a)) =
+            (self.replace, self.previous.take(), c.active.as_mut())
+        {
+            a.sub = sub;
+            a.gauge = gauge;
         }
     }
 }
@@ -228,7 +367,7 @@ pub fn run<T>(job: Job, work: impl FnOnce() -> Result<(T, String)>) -> Result<T>
                 .unwrap_or_else(|| format!("checking {}", job.label));
             out(&mut c, &format!("  ... {naming}"));
         }
-        start(&mut c, job.label);
+        start(&mut c, job.label, Gauge::None);
     }
     let result = work();
     let mut c = lock();
@@ -302,6 +441,26 @@ pub fn end_step() {
     end_phase(&mut c);
 }
 
+/// The question the run is waiting on, for the terminal title; `None` when it is answered.
+pub fn asking(prompt: Option<&str>) {
+    let mut c = lock();
+    c.asking = prompt.map(|p| p.split('`').nth(1).unwrap_or("an answer").to_string());
+    c.title_at = None;
+    update_title(&mut c);
+}
+
+/// The share done of the running work, only where the screen shows a bar for it.
+fn bar_percent(active: &Active) -> Option<u64> {
+    let (done, total) = match &active.gauge {
+        Gauge::Bytes {
+            source,
+            total: Some(t),
+        } => (bytes_of(source).unwrap_or(0), *t),
+        _ => return None,
+    };
+    (done <= total).then(|| render::percent(done, total))
+}
+
 /// Sets the terminal title at most once a second, on a terminal only.
 fn update_title(c: &mut Console) {
     if !c.tty
@@ -317,7 +476,19 @@ fn update_title(c: &mut Console) {
     };
     let (n, total) = (c.step, c.total);
     let (step_ms, run_ms) = (ms(*step_started), ms(run_started));
-    let text = if step.actor == steps::Actor::You {
+    let asking = c.asking.clone();
+    let text = if let Some(what) = asking.as_deref() {
+        render::title(
+            &render::Title::Waiting {
+                n,
+                total,
+                what,
+                step_ms,
+                run_ms,
+            },
+            c.title_tick,
+        )
+    } else if step.actor == steps::Actor::You {
         render::title(
             &render::Title::Waiting {
                 n,
@@ -334,6 +505,7 @@ fn update_title(c: &mut Console) {
                 n,
                 total,
                 label: step.title,
+                pct: c.active.as_ref().and_then(bar_percent),
                 step_ms,
                 run_ms,
             },
@@ -369,4 +541,19 @@ pub fn finish_run(outcome: &str) {
 pub fn stop_live() {
     let mut c = lock();
     finish(&mut c);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_read_position_is_the_pos_line_of_fdinfo() {
+        assert_eq!(
+            parse_pos("pos:\t1048576\nflags:\t0100000\nmnt_id:\t29\n"),
+            Some(1_048_576)
+        );
+        assert_eq!(parse_pos("flags:\t0\n"), None);
+        assert_eq!(parse_pos("pos:\tmany\n"), None);
+    }
 }

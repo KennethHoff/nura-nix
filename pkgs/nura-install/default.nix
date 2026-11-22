@@ -2,18 +2,21 @@
 #
 # ## Why it shells out
 #
-# It runs adb and fastboot instead of linking a crate for USB, so the only
-# crate is libc, for the effective user id, the umask and catching Ctrl-C. The wrapper puts
+# It runs adb, fastboot, curl, jq and xz instead of
+# linking crates for USB, HTTP, JSON and LZMA, so the only
+# crate is libc, for the effective user id, the umask, catching Ctrl-C and
+# reading the terminal without buffering. The wrapper puts
 # those tools on PATH.
 #
-# ## Cache and test hooks
+# ## Index, cache and test hooks
 #
-# `cacheDir` is compiled in
+# Nura's builds come from its image index, fetched on every run and checked file by file against
+# the hashes in it. `cacheDir` is compiled in
 # as `NURA_INSTALL_CACHE` when set (otherwise the cache is $XDG_DATA_HOME/nura-install), so an
 # exported NURA_INSTALL_* variable changes nothing in the shipped binary.
 # With `testHooks = true` the crate's `test-hooks` feature also reads
 # NURA_INSTALL_* from the environment, which lets the flake check stand in for the
-# phone. Only the flake check
+# phone, the image servers and the terminal. Only the flake check
 # builds that.
 {
   lib,
@@ -21,6 +24,9 @@
   makeWrapper,
   android-tools,
   coreutils,
+  curl,
+  jq,
+  xz,
   cacheDir ? null,
   testHooks ? false,
 }:
@@ -44,6 +50,7 @@ rustPlatform.buildRustPackage {
   env = lib.optionalAttrs (cacheDir != null) { NURA_INSTALL_CACHE = cacheDir; };
 
   nativeBuildInputs = [ makeWrapper ];
+  nativeCheckInputs = [ jq ];
 
   postInstall = ''
     wrapProgram $out/bin/nura-install \
@@ -51,6 +58,9 @@ rustPlatform.buildRustPackage {
         lib.makeBinPath [
           android-tools
           coreutils
+          curl
+          jq
+          xz
         ]
       }
   '';

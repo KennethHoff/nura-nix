@@ -6,6 +6,8 @@ use crate::config;
 use crate::fail::{Fail, Result};
 use crate::fastboot;
 use crate::host;
+use crate::images;
+use crate::nura::{self, Build, Offer};
 use crate::phone::{Serial, Slot};
 use crate::render::{limit, plural, Mark};
 use crate::ui::{self, Job};
@@ -20,6 +22,8 @@ const FIX_PROP: &str = "[ ] Wait until Android is booted and unlocked  [ ] Run a
 const FIX_ACCOUNTS: &str =
     "[ ] Settings > Passwords & accounts: sign out of every account  [ ] Run again.";
 const FIX_BATTERY: &str = "[ ] Charge the phone  [ ] Run again.";
+const FIX_NURA: &str =
+    "[ ] Run again later  [ ] Still failing: Nura's server or its index may have changed; report it.";
 const FIX_VAR: &str = "[ ] Flash nothing  [ ] Report this answer.";
 
 struct Row {
@@ -86,6 +90,26 @@ impl Report {
                 Some(value)
             }
             Err(e) => {
+                self.record(Mark::Fail, label, &e.to_string(), fix);
+                None
+            }
+        }
+    }
+
+    /// A check made of steps that print their own result lines; only a failure needs one here.
+    fn check_shown<T>(
+        &mut self,
+        label: &str,
+        fix: &'static str,
+        result: Result<(T, String)>,
+    ) -> Option<T> {
+        match result {
+            Ok((value, detail)) => {
+                self.record(Mark::Pass, label, &detail, fix);
+                Some(value)
+            }
+            Err(e) => {
+                ui::say(&format!("  {} {label}: {e}", Mark::Fail.tag()));
                 self.record(Mark::Fail, label, &e.to_string(), fix);
                 None
             }
@@ -246,20 +270,52 @@ pub fn same_phone(r: &mut Report, before: &Facts, after: &Facts) {
     });
 }
 
+/// Nura's builds for the phone the bootloader reported, from Nura's index fetched now.
+pub fn builds(r: &mut Report, cache: &Path, vars: Option<&fastboot::Vars>) -> Option<Vec<Offer>> {
+    let Some(vars) = vars else {
+        r.skip(
+            "Nura's builds for this phone",
+            "it needs the bootloader's answers",
+        );
+        return None;
+    };
+    r.check("Nura's builds for this phone", FIX_NURA, || {
+        let product = fastboot::product(vars)?;
+        let device = nura::device_for(&product)?;
+        let offers = nura::offers(&nura::fetch_index(cache)?, device)?;
+        let shown = format!("{} interfaces for {device}", offers.len());
+        Ok((offers, shown))
+    })
+}
+
+/// Nura's images from the index: downloaded, checked against its hashes and unpacked.
+pub fn images(r: &mut Report, build: &Build, cache: &Path) {
+    ui::say(&format!("  Nura build: {}", build.label()));
+    let result = images::nura(cache, build).map(|()| {
+        (
+            (),
+            "downloads match Nura's index; images unpacked".to_string(),
+        )
+    });
+    r.check_shown("the Nura images", FIX_NURA, result);
+}
+
 /// The bootloader's answers as checks of the report: `getvar all` once, then every variable the run
-/// needs; all failures are reported together.
-pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) {
-    let Some(vars) = r.check("getvar all", FIX_VAR, || {
+/// needs; all failures are reported together. Gives the answers when every check passed.
+pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) -> Option<fastboot::Vars> {
+    let vars = r.check("getvar all", FIX_VAR, || {
         let vars = fastboot::read_all(serial)?;
         let shown = format!("{} variables", vars.len());
         Ok((vars, shown))
-    }) else {
-        return;
-    };
+    })?;
+    let mut all_passed = true;
     for c in fastboot::checks(serial, slot, &vars) {
-        r.check(&c.label, FIX_VAR, || {
-            let shown = (c.run)()?;
-            Ok(((), shown))
-        });
+        all_passed &= r
+            .check(&c.label, FIX_VAR, || {
+                let shown = (c.run)()?;
+                Ok(((), shown))
+            })
+            .is_some();
     }
+    all_passed.then_some(vars)
 }

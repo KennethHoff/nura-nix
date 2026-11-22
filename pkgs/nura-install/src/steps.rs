@@ -85,6 +85,22 @@ pub const CHECK_BOOTLOADER: Step = tool(
     ],
     Some("unchanged"),
 );
+pub const CHOOSE_UI: Step = you(
+    "Choose Nura's interface",
+    "choose an interface",
+    Some("under 1 min"),
+    &["[ ] Pick an interface with the arrow keys and Enter (Esc stops the run)"],
+    Some(NOT_TOUCHED),
+);
+pub const FIND_BUILDS: Step = tool(
+    "Find Nura's builds for the phone",
+    Some("under 1 min"),
+    &[
+        "- downloads Nura's image index (a small file, fetched fresh)",
+        "- lists the interfaces it builds for this phone and the newest build of each",
+    ],
+    Some("nothing sent about the phone"),
+);
 pub const RESTART_TO_ANDROID: Step = you(
     "Restart into Android",
     "restart into Android",
@@ -101,6 +117,15 @@ pub const CHECK_ADB: Step = tool(
     Some("under 1 min"),
     &["- reads serial, slot, accounts, battery (no account may be signed in; battery at least 50 %)"],
     Some(ON_ANDROID),
+);
+pub const FIND_IMAGES: Step = tool(
+    "Find, download and verify the images",
+    Some("1-20 min (cached files are only re-checked)"),
+    &[
+        "- downloads the newest build of the chosen interface, checks it against the hashes in Nura's index",
+        "- unpacks the images",
+    ],
+    Some("nothing sent"),
 );
 pub const TO_FASTBOOT: Step = you(
     "Put the phone in fastboot",
@@ -121,12 +146,15 @@ pub const SUMMARY: Step = tool(
 );
 
 #[cfg(test)]
-pub const ALL: [&Step; 7] = [
+pub const ALL: [&Step; 10] = [
+    &FIND_BUILDS,
+    &CHOOSE_UI,
     &CHECK_COMPUTER,
     &CONNECT,
     &CHECK_BOOTLOADER,
     &RESTART_TO_ANDROID,
     &CHECK_ADB,
+    &FIND_IMAGES,
     &TO_FASTBOOT,
     &SUMMARY,
 ];

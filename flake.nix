@@ -37,7 +37,10 @@
             pkgs.runCommand "nura-install-test"
               {
                 nativeBuildInputs = with pkgs; [
+                  curl
+                  jq
                   util-linux
+                  xz
                 ];
               }
               ''
