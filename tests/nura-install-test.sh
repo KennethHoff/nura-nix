@@ -1,4 +1,4 @@
-# End-to-end test of nura-install against a fake adb, fastboot and local image servers.
+# End-to-end test of nura-install against a fake adb, fastboot, ssh, ip and local image servers.
 # Usage: nura-install-test.sh <test-hooks binary> <shipped binary> <the shipped binary's cache dir>
 set -euo pipefail
 umask 077
@@ -9,7 +9,7 @@ root=$(mktemp -d)
 bash_bin=$(command -v bash)
 export LOG=$root/fastboot.log ADB_LOG=$root/adb.log FLASHED=$root/flashed COUNT=$root/devices-count
 export STATE_LOG=$root/state.log SIG_LOG=$root/sig.log CURL_LOG=$root/curl.log PCOUNT=$root/product-count
-export HCOUNT=$root/psize-count ADB_COUNT=$root/adb-count WROTE=$root/wrote ADB_BACK=$root/adb-back
+export HCOUNT=$root/psize-count SSH_LOG=$root/ssh.log SSH_ENV_LOG=$root/ssh-env.log ADB_COUNT=$root/adb-count PARTS=$root/phoneparts NC_PID=$root/nc.pid SSHD_STOPPED=$root/sshd-stopped WROTE=$root/wrote ADB_BACK=$root/adb-back
 cache=$root/cache
 export STATE_FILE=$cache/phones/ABC123/state.json
 
@@ -29,6 +29,11 @@ sum() { sha256sum "$1" | cut -d' ' -f1; }
 printf 'hello' > "$root/sdcard/a.txt"
 printf 'nested' > "$root/sdcard/sub dir/b c.txt"
 printf '' > "$root/sdcard/empty"
+
+# The phone's per-phone partitions as Nura sees them.
+mkdir -p "$PARTS"
+for n in persist modemst1 modemst2 fsg fsc; do { echo "partition $n"; seq 1 300; } > "$PARTS/$n"; done
+echo 0 > "$root/ip_forward"
 
 # Nura's images: the newest build (what the index should lead to), an older one, and one from another release.
 for k in nura old rel; do
@@ -253,7 +258,100 @@ case "$1" in
   reboot) write reboot "" ;;
 esac
 EOS
-for t in adb fastboot curl; do
+# Fake ssh knobs (the phone's partitions are the files in $PARTS):
+#   FAKE_SSH_HOSTKEY=<key>  the host key the phone presents (default AAAAKEY1)
+#   FAKE_SSH_SERIAL=<serial>  Nura's androidboot.serialno
+#   FAKE_SSH_BADHASH=<name>  the phone reports a wrong sha256 for that partition
+#   FAKE_SSH_CORRUPT=<name>  the streamed bytes of that partition differ from what the phone hashed
+#   FAKE_SSH_DDFAIL=<name>  the stream of that partition breaks off with an error
+#   FAKE_SSH_HANG=<text>  a remote command containing that text never returns
+#   FAKE_SSH_STOPFAIL=1  `systemctl stop sshd` fails
+#   FAKE_SSH_DUPLABEL=<name>  two devices carry that partition label
+#   FAKE_SSH_NOHOLDER=<name>  no device carries that partition label
+#   FAKE_SSH_SIZE_OFF=<name>  the phone reports that partition one byte too big
+cat > "$root/bin/ssh" <<'EOS'
+[ "$1" = -V ] && { echo "OpenSSH_fake" >&2; exit 0; }
+echo "$*" >> "$SSH_LOG"
+env | sort >> "$SSH_ENV_LOG"
+known=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -F | -b | -p) shift 2 ;;
+    -o) case $2 in UserKnownHostsFile=*) known=${2#UserKnownHostsFile=} ;; esac; shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+target=$1; shift; remote=$*
+[ -s "$known" ] || { echo "Host key verification failed." >&2; exit 255; }
+[ "$(awk '{print $3}' "$known")" = "${FAKE_SSH_HOSTKEY:-AAAAKEY1}" ] || { echo "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!" >&2; exit 255; }
+pw=$("$SSH_ASKPASS" "$target's password: ") || { echo "Permission denied (no password)" >&2; exit 255; }
+[ "$pw" = 147147 ] || { echo "Permission denied, please try again." >&2; exit 255; }
+[ -z "${FAKE_SSH_HANG:-}" ] || case $remote in *"$FAKE_SSH_HANG"*) exec sleep 30 ;; esac
+sudo_pw() { read -r p; [ "$p" = 147147 ] || { echo "sudo: incorrect password" >&2; exit 1; }; }
+case $remote in
+  "ls -1 /dev/disk/by-partlabel") ls -1 "$PARTS" ;;
+  "cat /proc/cmdline") echo "quiet androidboot.serialno=${FAKE_SSH_SERIAL:-ABC123} root=/dev/x" ;;
+  "grep -lx PARTNAME="*" /sys/class/block/*/uevent || true")
+    name=${remote#*PARTNAME=}; name=${name%% *}
+    [ "${FAKE_SSH_NOHOLDER:-}" != "$name" ] || exit 0
+    echo "/sys/class/block/dev-$name/uevent"
+    [ "${FAKE_SSH_DUPLABEL:-}" != "$name" ] || echo "/sys/class/block/other-$name/uevent" ;;
+  "sudo -S -p '' blockdev --getsize64 /dev/disk/by-partlabel/"*)
+    sudo_pw; name=${remote##*/}
+    n=$(stat -c %s "$PARTS/$name")
+    [ "${FAKE_SSH_SIZE_OFF:-}" != "$name" ] || n=$((n + 1))
+    echo "$n" ;;
+  "sudo -S -p '' sha256sum /dev/disk/by-partlabel/"*)
+    sudo_pw; name=${remote##*/}
+    h=$(sha256sum "$PARTS/$name" | cut -d' ' -f1)
+    [ "${FAKE_SSH_BADHASH:-}" != "$name" ] || h=$(printf 0 | sha256sum | cut -d' ' -f1)
+    echo "$h  /dev/disk/by-partlabel/$name" ;;
+  "sudo -S -p '' dd if=/dev/disk/by-partlabel/"*" bs=4M")
+    sudo_pw; name=${remote#*partlabel/}; name=${name%% *}
+    if [ "${FAKE_SSH_DDFAIL:-}" = "$name" ]; then head -c 3 "$PARTS/$name"; echo "dd: error reading" >&2; exit 1; fi
+    cat "$PARTS/$name"
+    [ "${FAKE_SSH_CORRUPT:-}" != "$name" ] || printf x ;;
+  "sudo -S -p '' systemctl stop sshd")
+    sudo_pw
+    [ -z "${FAKE_SSH_STOPFAIL:-}" ] || { echo "Failed to stop sshd.service" >&2; exit 1; }
+    touch "$SSHD_STOPPED"; kill "$(cat "$NC_PID")" 2> /dev/null || true ;;
+  *) echo "fake ssh: unexpected remote command: $remote" >&2; exit 1 ;;
+esac
+EOS
+
+cat > "$root/bin/ssh-keyscan" <<'EOS'
+echo "# ${@: -1}:22 SSH-2.0-fake" >&2
+echo "[${@: -1}]:${@: -2:1} ssh-ed25519 ${FAKE_SSH_HOSTKEY:-AAAAKEY1}"
+EOS
+cat > "$root/bin/ssh-keygen" <<'EOS'
+read -r line
+echo "256 SHA256:FAKEFINGERPRINT-$(echo "$line" | awk '{print $3}') no comment (ED25519)"
+EOS
+
+# Fake ip: the phone's USB network is usb0 with the computer's address; knobs:
+#   FAKE_IP_NOADDR=1  no interface has the address;  FAKE_IP_EXTRA_ROUTE=1  a second route to the subnet, on tailscale0
+#   FAKE_IP_GET_DEV=<dev>  the interface a route to the phone goes over
+cat > "$root/bin/ip" <<'EOS'
+[ "$1" = -V ] && { echo "ip utility, iproute2-fake"; exit 0; }
+[ "$1" = -j ] || exit 1
+shift
+case "$*" in
+  "addr show")
+    if [ -n "${FAKE_IP_NOADDR:-}" ]; then
+      echo '[{"ifname":"lo","addr_info":[{"local":"127.0.0.1"}]}]'
+    else
+      echo '[{"ifname":"lo","addr_info":[{"local":"127.0.0.1"}]},{"ifname":"usb0","addr_info":[{"local":"'"$NURA_INSTALL_LOCAL_ADDR"'"}]}]'
+    fi ;;
+  "route show")
+    extra=
+    [ -z "${FAKE_IP_EXTRA_ROUTE:-}" ] || extra=',{"dst":"127.0.0.0/24","dev":"tailscale0"}'
+    echo '[{"dst":"default","dev":"wlan0"},{"dst":"127.0.0.0/24","dev":"usb0"}'"$extra"']' ;;
+  "route get "*) echo '[{"dst":"'"${@: -1}"'","dev":"'"${FAKE_IP_GET_DEV:-usb0}"'"}]' ;;
+  *) exit 1 ;;
+esac
+EOS
+for t in adb fastboot curl ssh ssh-keyscan ssh-keygen ip; do
   sed -i "1i #!$bash_bin" "$root/bin/$t"
   chmod +x "$root/bin/$t"
 done
@@ -262,6 +360,10 @@ export NURA_INSTALL_ADB=$root/bin/adb NURA_INSTALL_FASTBOOT=$root/bin/fastboot
 export NURA_INSTALL_NURA_INDEX=file://$root/index.json NURA_INSTALL_CACHE=$cache
 export NURA_INSTALL_ALLOW_FILE_URLS=1 NURA_INSTALL_WAIT_SECONDS=0 NURA_INSTALL_NEEDED_GIB=0
 export NURA_INSTALL_ALLOW_PIPED_INPUT=1 NURA_INSTALL_WRITE_TIMEOUT_SECONDS=60
+sshd_port=$(( 30000 + $$ % 20000 ))
+export NURA_INSTALL_SSH=$root/bin/ssh NURA_INSTALL_SSH_KEYSCAN=$root/bin/ssh-keyscan NURA_INSTALL_SSH_KEYGEN=$root/bin/ssh-keygen NURA_INSTALL_IP=$root/bin/ip
+export NURA_INSTALL_PHONE_ADDR=127.0.0.1:$sshd_port NURA_INSTALL_LOCAL_ADDR=127.0.0.2 NURA_INSTALL_IP_FORWARD_FILE=$root/ip_forward
+export NURA_INSTALL_COPY_WAIT_SECONDS=0 NURA_INSTALL_SSH_TIMEOUT_SECONDS=20
 export FAKE_SDCARD=$root/sdcard
 REAL_CURL=$(command -v curl)
 export REAL_CURL
@@ -271,6 +373,8 @@ done_phrase='Confirm'
 # Menus are answered by their word when the input is piped (the test build only); the pty cases press keys.
 choice='phosh\n'
 confirmations="${choice}$done_phrase\nbackup\n"
+trust='trust this phone'
+copy_in="copy\n$trust\n"
 fresh_in="${confirmations}install nura\nreboot\n"
 install_in="${choice}install nura\nreboot\n"
 reinstall_in="${choice}reinstall nura\nreboot\n"
@@ -282,15 +386,19 @@ set_record() { # state [slot]: a record
     '{state: $s, slot: $slot, backup: "/b",
       nura_build: "fake", nura_boot_sha256: $nb, nura_rootfs_sha256: $nr}' > "$STATE_FILE"
 }
+sshd_was_stopped() { [ -e "$SSHD_STOPPED" ] || fail "$1: sshd was not stopped"; }
+set_copied() { jq '. + {copy_path: "/p", copy_time: "t"}' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"; }
 state() { jq -r .state "$STATE_FILE"; }
 run() { # stdin, args...
   local input=$1
   shift
-  rm -rf "$FLASHED" "$LOG" "$COUNT" "$PCOUNT" "$ADB_LOG" "$STATE_LOG" "$SIG_LOG" "$CURL_LOG" "$ADB_COUNT" "$HCOUNT" "$WROTE" "$ADB_BACK"
+  rm -rf "$FLASHED" "$LOG" "$COUNT" "$PCOUNT" "$ADB_LOG" "$STATE_LOG" "$SIG_LOG" "$CURL_LOG" "$ADB_COUNT" "$HCOUNT" "$SSH_LOG" "$SSH_ENV_LOG" "$SSHD_STOPPED" "$WROTE" "$ADB_BACK"
   mkdir -p "$FLASHED"
   : > "$LOG"
   : > "$ADB_LOG"
-    rc=0
+  : > "$SSH_LOG"
+  : > "$SSH_ENV_LOG"
+  rc=0
   printf '%b' "$input" | "$tool" "$@" > "$root/out" 2>&1 || rc=$?
 }
 writes() { grep -E '(erase|flash|reboot)' "$LOG" || true; }
@@ -372,6 +480,23 @@ wait_for() { # file, text: up to 20 s
   fail "never saw: $2"
 }
 
+sshd_up() { # a listener on the phone's address, as sshd on Nura
+  sshd_down
+  nc -lk 127.0.0.1 "$sshd_port" > /dev/null 2>&1 &
+  echo $! > "$NC_PID"
+  local i
+  for i in $(seq 50); do
+    (exec 3<> "/dev/tcp/127.0.0.1/$sshd_port") 2> /dev/null && return 0
+    sleep 0.1
+  done
+  fail "the fake sshd did not start"
+}
+sshd_down() {
+  if [ -s "$NC_PID" ]; then kill "$(cat "$NC_PID")" 2> /dev/null || true; fi
+  : > "$NC_PID"
+  sleep 0.2
+}
+sshd_down
 sections_of() { # file: the sections and numbered steps in the order they appear, one line
   grep -E '^(=== |== Step )' "$1" | sed -E 's/^=== (.*)$/[\1]/; s/^== Step ([0-9]+) of ([0-9]+) · (YOU|TOOL): .*$/\1\/\2/' | tr '\n' ' ' | sed 's/ $//'
 }
@@ -422,6 +547,10 @@ grep -q 'interactive terminal' "$root/out" || fail "shipped with no terminal did
 [ ! -e "$root/shipped-fake/cache" ] || fail "the shipped binary used an exported NURA_INSTALL_CACHE"
 ls "$shipped_cache/logs"/*-run.log > /dev/null || fail "the shipped run left no transcript in its own cache"
 rm -rf "$shipped_cache"
+# The askpass variable only counts when it names an ancestor; set by hand it changes nothing.
+rc=0; NURA_INSTALL_ASKPASS=999999 "$shipped" "Password: " > "$root/out" 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "the shipped binary with a stray askpass variable exited $rc, not 2"
+! grep -q 147147 "$root/out" || fail "a stray askpass variable made the shipped binary print the password"
 export NURA_INSTALL_ADB=$root/bin/adb NURA_INSTALL_FASTBOOT=$root/bin/fastboot
 export NURA_INSTALL_NURA_INDEX=file://$root/index.json NURA_INSTALL_CACHE=$cache NURA_INSTALL_NEEDED_GIB=0
 export NURA_INSTALL_CURL=$root/bin/curl
@@ -429,7 +558,8 @@ export NURA_INSTALL_CURL=$root/bin/curl
 ## Fresh from Android
 
 fresh_cache
-FAKE_FB_AFTER=1 run "$fresh_in"
+sshd_up
+FAKE_FB_AFTER=1 run "${fresh_in}$copy_in"
 [ "$rc" = 0 ] || fail "fresh install exited $rc"
 [ "$(cat "$LOG")" = "devices
 devices
@@ -445,12 +575,15 @@ $fit_install
 -s ABC123 flash boot $nura_raw/nura-boot.img
 $fb_identity
 -s ABC123 reboot" ] || fail "fresh install ran: $(cat "$LOG")"
-# The backup is on disk before the run goes on (fsync of files and directories).
+# The backup, and later the copy of the partitions, are on disk before the run goes on (fsync of files and directories).
 synced=$(grep 'check synced to disk' "$cache/logs/"* | sed 's/.*synced to disk: //')
 [ "$(printf '%s\n' "$synced" | grep -c "$cache/backups/ABC123/backup-")" = 1 ] || fail "the backup was not synced: $synced"
+[ "$(printf '%s\n' "$synced" | grep -c "$cache/backups/ABC123/partitions-")" = 1 ] || fail "the partition copy was not synced: $synced"
 [ "$(cat "$FLASHED/userdata")" = nura-rootfs ] || fail "userdata got the wrong image"
 [ "$(cat "$FLASHED/boot")" = nura-boot ] || fail "boot got the wrong image"
 cp "$root/out" "$root/out.install"
+cp "$SSH_LOG" "$root/ssh.install"
+cp "$SSH_ENV_LOG" "$root/ssh-env.install"
 plain_output "install" "$root/out.install"
 ! LC_ALL=C grep -aq -P '\x1b\]2;' "$root/out.install" || fail "a title escape reached a pipe"
 every_wait_is_named "install" "$root/out.install"
@@ -461,10 +594,10 @@ for line in '  \.\.\. streaming the phone.s storage to [^ ]*sdcard\.tar$' '  \.\
   '  \[ ok \] fastboot partition-size:userdata_a \(absent\): absent' '  \[ ok \] sizing /sdcard: 3 files, 4\.5 KiB' \
   '  \[ ok \] exactly one phone: ABC123' '  \[ ok \] accounts signed in: none signed in' \
   '  Nura build: edge phosh 2026-11-13T23:32:00' \
-  '  Preflight passed: ' '^done in [0-9.]+ s: finished$' '^  Step 9 of 17 done  '; do
+  '  Preflight passed: ' '^done in [0-9.]+ s: finished$' '^  Step 9 of 19 done  '; do
   grep -qE -- "$line" "$root/out.install" || fail "install output lacks: $line"
 done
-[ "$(grep -c '^== Step ' "$root/out.install")" = 17 ] || fail "the install is not seventeen steps"
+[ "$(grep -c '^== Step ' "$root/out.install")" = 19 ] || fail "the install is not nineteen steps"
 [ "$(grep -c '^=== ' "$root/out.install")" = 4 ] || fail "the install is not four sections"
 [ "$(state)" = nura-installed ] || fail "state after install is $(state)"
 # The planned length of the /sdcard tar equals what the phone streamed, byte for byte.
@@ -489,20 +622,45 @@ for n in contacts.txt sms.txt call-log.txt calendar.txt; do grep -q "$n: 2 rows"
 grep -q 'never relock' "$root/out" || fail "no relock warning"
 [ -z "$(find "$cache" -perm /077 -not -type l)" ] || fail "something in the cache is not private: $(find "$cache" -perm /077)"
 # The sections and their steps, in order.
-[ "$(sections_of "$root/out.install")" = "[Preflight] 1/17 2/17 3/17 4/17 5/17 6/17 7/17 8/17 [Prepare] 9/17 10/17 11/17 12/17 [Install] 13/17 14/17 [Finish] 15/17 16/17 17/17" ] \
+[ "$(sections_of "$root/out.install")" = "[Preflight] 1/19 2/19 3/19 4/19 5/19 6/19 7/19 8/19 [Prepare] 9/19 10/19 11/19 12/19 [Install] 13/19 14/19 [Finish] 15/19 16/19 17/19 18/19 19/19" ] \
   || fail "sections out of order: $(sections_of "$root/out.install")"
 order=$(grep -n -E '^== Step ' "$root/out" | sed -E 's/^[0-9]*:== Step [0-9]+ of [0-9]+ · (YOU|TOOL): //; s/ +POINT OF NO RETURN$//' | tr '\n' '|')
-[ "$order" = "Check this computer|Check the phone over adb|Put the phone in fastboot|Check the bootloader|Find Nura's builds for the phone|Choose Nura's interface|Restart into Android|Find, download and verify the images|Confirm what is lost|Back up the phone|Put the phone in fastboot|Check the phone in fastboot|Approve the install|Install Nura|Approve the reboot|Restart the phone|Summarize|" ] \
+[ "$order" = "Check this computer|Check the phone over adb|Put the phone in fastboot|Check the bootloader|Find Nura's builds for the phone|Choose Nura's interface|Restart into Android|Find, download and verify the images|Confirm what is lost|Back up the phone|Put the phone in fastboot|Check the phone in fastboot|Approve the install|Install Nura|Approve the reboot|Restart the phone|Start sshd on Nura|Copy the per-phone partitions|Summarize|" ] \
   || fail "steps out of order: $order"
 actors=$(grep -E '^== Step ' "$root/out" | sed -E 's/^.* · (YOU|TOOL): .*/\1/' | tr '\n' ' ')
-[ "$actors" = "TOOL TOOL YOU TOOL TOOL YOU YOU TOOL YOU TOOL YOU TOOL YOU TOOL YOU TOOL TOOL " ] || fail "actors out of order: $actors"
-grep -q '^== Step 1 of 17 · TOOL: Check this computer$' "$root/out" || fail "steps are not numbered"
-grep -q '^== Step 13 of 17 · YOU: Approve the install  *POINT OF NO RETURN$' "$root/out" || fail "the approval is not the marked point of no return"
-grep -q '^== Step 17 of 17 · TOOL: Summarize$' "$root/out" || fail "the last step is not 17 of 17"
+[ "$actors" = "TOOL TOOL YOU TOOL TOOL YOU YOU TOOL YOU TOOL YOU TOOL YOU TOOL YOU TOOL YOU TOOL TOOL " ] || fail "actors out of order: $actors"
+grep -q '^== Step 1 of 19 · TOOL: Check this computer$' "$root/out" || fail "steps are not numbered"
+grep -q '^== Step 13 of 19 · YOU: Approve the install  *POINT OF NO RETURN$' "$root/out" || fail "the approval is not the marked point of no return"
+grep -q '^== Step 19 of 19 · TOOL: Summarize$' "$root/out" || fail "the last step is not 19 of 19"
 grep -q 'Hold Power, tap Power off' "$root/out" && grep -q 'Hold Volume Down + Power until the fastboot screen shows' "$root/out" || fail "no fastboot instruction"
 grep -q '^  \.\.\. waiting for the phone in fastboot mode (up to 0 s)' "$root/out" || fail "no waiting line"
 [ "$(grep -n 'never relock' "$root/out" | head -1 | cut -d: -f1)" -lt "$(grep -n 'Install Nura runs' "$root/out" | cut -d: -f1)" ] \
   || fail "the warnings come after the gate"
+# The copy of the per-phone partitions.
+part_dir=$(jq -r .copy_path "$STATE_FILE")
+case $part_dir in "$cache"/backups/ABC123/partitions-*) ;; *) fail "unexpected copy path $part_dir" ;; esac
+[ -n "$(jq -r .copy_time "$STATE_FILE")" ] || fail "the copy time was not recorded"
+for n in persist modemst1 modemst2 fsg fsc; do
+  cmp -s "$part_dir/$n.img" "$PARTS/$n" || fail "the copy of $n differs from the phone's"
+  [ "$(stat -c %a "$part_dir/$n.img")" = 600 ] || fail "$n.img is not private"
+  grep -q "^$(sum "$PARTS/$n")  $(stat -c %s "$PARTS/$n")  $n.img$" "$part_dir/manifest.txt" || fail "the manifest lacks $n"
+done
+grep -q '^serial: ABC123$' "$part_dir/manifest.txt" || fail "the manifest lacks the serial"
+[ -e "$SSHD_STOPPED" ] || fail "sshd was not stopped"
+grep -q 'sshd is stopped again' "$root/out" || fail "the run did not say sshd was stopped"
+grep -qF "copied to $part_dir" "$root/out" || fail "the summary lacks the copy"
+known=$cache/phones/ABC123/known_hosts
+[ "$(stat -c %a "$known")" = 600 ] || fail "known_hosts is not private"
+grep -q 'ssh-ed25519 AAAAKEY1' "$known" || fail "the host key was not pinned"
+grep -q 'SHA256:FAKEFINGERPRINT-AAAAKEY1' "$root/out" || fail "the host key fingerprint was not shown"
+# The password is never an argument, and the environment only carries the askpass contract.
+! grep -q 147147 "$root/ssh.install" || fail "the password is in ssh's arguments"
+! grep -q 147147 "$root/ssh-env.install" || fail "the password is in ssh's environment"
+grep -q '^NURA_INSTALL_ASKPASS=[0-9]*$' "$root/ssh-env.install" || fail "ssh was not given the askpass contract"
+grep -q '^SSH_ASKPASS_REQUIRE=force$' "$root/ssh-env.install" || fail "ssh was not made to use the askpass hook"
+for opt in 'StrictHostKeyChecking=yes' "UserKnownHostsFile=$known" 'PreferredAuthentications=password' 'PubkeyAuthentication=no' 'NumberOfPasswordPrompts=1' '-F /dev/null' '-b 127.0.0.2'; do
+  grep -qF -- "$opt" "$root/ssh.install" || fail "ssh was run without: $opt"
+done
 # The transcript.
 [ "$(ls "$cache/logs" | wc -l)" = 1 ] || fail "expected one transcript"
 transcript=$cache/logs/$(ls "$cache/logs")
@@ -511,15 +669,18 @@ case $transcript in *-run.log) ;; *) fail "transcript not named for the run: $tr
 grep -q 'run: .*fastboot.* flash boot' "$transcript" || fail "transcript lacks the write command"
 grep -q 'check serial: ABC123' "$transcript" || fail "transcript lacks the serial check"
 grep -q 'choice: install nura' "$transcript" || fail "transcript lacks the gate"
+grep -q 'choice: trust this phone' "$transcript" || fail "transcript lacks the host key confirmation"
 grep -q 'outcome: finished' "$transcript" || fail "transcript lacks the outcome"
 ! grep -E '^(run|exit|output|check):' "$transcript" | grep -q 147147 || fail "the password is in the transcript's commands"
 [ "$(grep -c 147147 "$transcript")" = "$(grep 147147 "$transcript" | grep -ci 'log in as\|user / 147147\|Log in: ')" ] || fail "the password appears in the transcript outside the login instructions"
+sshd_down
 
 # Cached files are re-hashed, never trusted.
 set_record nura-installed
 run "$reinstall_in"
 [ "$rc" = 0 ] || fail "cached rerun exited $rc"
 grep -q 'cached nura-boot.img.xz: hash matches' "$root/out" || fail "cache not reused"
+[ ! -e "$cache/phones/ABC123/known_hosts" ] || fail "a new Nura install kept the old host key"
 printf 'x' >> "$cache/downloads/nura-boot.img.xz"
 printf 'damaged' > "$cache/downloads/nura-rootfs.img"
 run "$reinstall_in"
@@ -542,7 +703,7 @@ FAKE_CRLF=1 FAKE_FB_AFTER=1 run "$fresh_in"
 # ... also with a path over 100 bytes, which the tar writes a long-name entry for.
 longdir=$root/sdcard/$(printf 'd%.0s' $(seq 60))/$(printf 'e%.0s' $(seq 60))
 mkdir -p "$longdir" && echo hi > "$longdir/f"
-NURA_INSTALL_CACHE=$root/cache2 FAKE_FB_AFTER=1 run "$fresh_in"
+NURA_INSTALL_CACHE=$root/cache2 FAKE_FB_AFTER=1 run "${fresh_in}skip\n"
 [ "$rc" = 0 ] || fail "the install with a long path exited $rc"
 [ "$(planned "$root/cache2")" = "$(stat -c %s "$root"/cache2/backups/ABC123/backup-*/sdcard.tar)" ] || fail "the planned tar length $(planned "$root/cache2") differs from the stream with a long path"
 rm -rf "$root/sdcard/ddd"* "$root/cache2"
@@ -554,13 +715,15 @@ FAKE_FB_AFTER=0 run "$choice"
 refused "a phone in fastboot with no record" 'has no record' 3
 [ ! -e "$cache/phones" ] || fail "nothing-to-do wrote a record"
 set_record nura-installed
+set_copied
 FAKE_FB_AFTER=9 FAKE_ADB=none run ''
-refused "an installed phone, not in fastboot" 'hold Volume Down + Power' 3
+refused "an installed phone, copied, not in fastboot" 'hold Volume Down + Power' 3
 ! grep -q 'Choose' "$root/out" || fail "a menu was offered where only one action is left"
 set_record nura-in-progress
 FAKE_FB_AFTER=9 FAKE_ADB=none run ''
 refused "a half installed phone, not in fastboot" 'is `nura-in-progress`' 3
 set_record nura-installed
+set_copied
 mkdir -p -m 700 "$cache/phones/OTHER1" && cp "$STATE_FILE" "$cache/phones/OTHER1/state.json"
 FAKE_FB_AFTER=9 FAKE_ADB=none run ''
 refused "two recorded phones and none in fastboot" 'phones have a record and none is in fastboot'
@@ -569,7 +732,6 @@ set_record nura-installed
 run "$reinstall_in"
 [ "$rc" = 0 ] || fail "reinstalling exited $rc"
 grep -q 'Nura is installed: this run reinstalls it' "$root/out" || fail "the reinstall was not announced"
-[ "$(sections_of "$root/out")" = "[Preflight] 1/10 2/10 3/10 4/10 5/10 [Install] 6/10 7/10 [Finish] 8/10 9/10 10/10" ] || fail "reinstall sections: $(sections_of "$root/out")"
 set_record nura-installed
 FAKE_FB_AFTER=9 run "$choice"
 refused "a recorded phone on adb" 'from fastboot' 3
@@ -698,7 +860,7 @@ make_index "$fp6_images"' |= (if (.name | endswith("-boot.img.xz") | not) then .
 pre_fail "a download that does not hash to Nura's index" "nura-rootfs.img.xz does not match Nura's index"
 grep -q '^Not ready: 1 check failed, 0 skipped' "$root/out" || fail "wrong count of failures: $(grep '^Not ready' "$root/out")"
 [ "$(sed -n '/^What each one means/,$p' "$root/out" | grep -c '^  - ')" = 1 ] || fail "not every failure is explained"
-grep -q 'Step 8 of 17 .*Find, download and verify the images' "$root/out" || fail "the Preflight did not reach its last step"
+grep -q 'Step 8 of 19 .*Find, download and verify the images' "$root/out" || fail "the Preflight did not reach its last step"
 make_index
 # The bootloader is read first, before any download or backup: every wrong answer is reported at once, then the run stops.
 fresh_cache
@@ -717,18 +879,18 @@ no_writes "a failed bootloader check"
 fresh_cache
 FAKE_ADB_AFTER=1 NURA_INSTALL_WAIT_SECONDS=10 FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "the run that waited for the phone exited $rc"
-[ "$(sections_of "$root/out")" = "[Preflight] 1/18 2/18 3/18 4/18 5/18 6/18 7/18 8/18 9/18 [Prepare] 10/18 11/18 12/18 13/18 [Install] 14/18 15/18 [Finish] 16/18 17/18 18/18" ] || fail "sections with the wait: $(sections_of "$root/out")"
-grep -q '^== Step 2 of 18 · YOU: Connect the phone with USB debugging$' "$root/out" || fail "no step to connect the phone"
+[ "$(sections_of "$root/out")" = "[Preflight] 1/20 2/20 3/20 4/20 5/20 6/20 7/20 8/20 9/20 [Prepare] 10/20 11/20 12/20 13/20 [Install] 14/20 15/20 [Finish] 16/20 17/20 18/20 19/20 20/20" ] || fail "sections with the wait: $(sections_of "$root/out")"
+grep -q '^== Step 2 of 20 · YOU: Connect the phone with USB debugging$' "$root/out" || fail "no step to connect the phone"
 grep -q '^  \.\.\. waiting for the phone over adb (up to 10 s)' "$root/out" || fail "the wait for adb was not named"
 # A YOU step ends when the phone shows its result: the restart step stays open until the phone is back over adb.
 fresh_cache
 FAKE_ADB_BACK_AFTER=2 NURA_INSTALL_WAIT_SECONDS=20 FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "the run that waited for the phone to come back exited $rc"
 awk '
-  /^== Step 7 of 17 · YOU: Restart into/ { in5 = 1; next }
-  /^== Step 8 of 17/ { in5 = 0 }
+  /^== Step 7 of 19 · YOU: Restart into/ { in5 = 1; next }
+  /^== Step 8 of 19/ { in5 = 0 }
   in5 && /waiting for the phone over adb/ { waited = 1 }
-  in5 && /^  Step 7 of 17 done/ { done5 = $0 }
+  in5 && /^  Step 7 of 19 done/ { done5 = $0 }
   END { if (!waited || done5 ~ / 0\.[0-9] s$/) { print "waited=" waited " done=" done5; exit 1 } }' "$root/out" || fail "the restart step ended before the phone was back over adb"
 fresh_cache
 FAKE_FB_AFTER=1 run "$choice"
@@ -984,6 +1146,215 @@ rc=0
 flock "$cache/lock" "$tool" > "$root/out" 2>&1 < /dev/null || rc=$?
 refused "concurrent run" 'another nura-install'
 
+## Copy of the per-phone partitions (a recorded, installed phone; none in fastboot or over adb; sshd up)
+
+known=$cache/phones/ABC123/known_hosts
+copy_only() { # stdin
+  sshd_up
+  rm -rf "$cache"/backups/ABC123/partitions-*
+  set_record nura-installed
+  FAKE_FB_AFTER=9 FAKE_ADB=none run "$1"
+}
+no_ssh() { # name: ssh was never run
+  [ ! -s "$SSH_LOG" ] || fail "$1: ssh was run: $(cat "$SSH_LOG")"
+}
+sshd_was_stopped() { [ -e "$SSHD_STOPPED" ] || fail "$1: sshd was not stopped"; }
+no_copy_recorded() { [ -z "$(jq -r '.copy_path // empty' "$STATE_FILE")" ] || fail "$1: a copy was recorded"; }
+
+rm -f "$known"
+copy_only "$copy_in"
+[ "$rc" = 0 ] || fail "copy-only run exited $rc"
+cp "$root/out" "$root/out.copy"
+plain_output "copy-only" "$root/out.copy"
+step_blocks "copy-only" "$root/out.copy"
+[ "$(sections_of "$root/out.copy")" = "[Preflight] 1/4 [Finish] 2/4 3/4 4/4" ] || fail "copy-only sections: $(sections_of "$root/out.copy")"
+[ "$(cat "$LOG")" = devices ] || fail "the copy-only run asked fastboot for more than where the phone is: $(cat "$LOG")"
+no_writes "copy-only"
+! grep -q 'getprop\|exec-out' "$ADB_LOG" || fail "the copy-only run read the phone over adb"
+[ "$(state)" = nura-installed ] || fail "copy-only left $(state)"
+part_dir=$(jq -r .copy_path "$STATE_FILE")
+for n in persist modemst1 modemst2 fsg fsc; do cmp -s "$part_dir/$n.img" "$PARTS/$n" || fail "copy-only: $n differs"; done
+[ -e "$SSHD_STOPPED" ] && grep -q 'sshd is stopped again' "$root/out" || fail "copy-only did not stop sshd"
+! grep -q 147147 "$SSH_LOG" || fail "the password is in ssh's arguments"
+! grep -q 147147 "$SSH_ENV_LOG" || fail "the password is in ssh's environment"
+[ -s "$known" ] || fail "the host key was not pinned"
+# An installed phone that was copied is reinstalled from fastboot, without the copy steps, and forgets its host key.
+run "$reinstall_in"
+[ "$rc" = 0 ] || fail "reinstall of a copied phone exited $rc"
+[ "$(sections_of "$root/out")" = "[Preflight] 1/10 2/10 3/10 4/10 5/10 [Install] 6/10 7/10 [Finish] 8/10 9/10 10/10" ] || fail "reinstall sections: $(sections_of "$root/out")"
+! grep -q 'Start sshd on Nura' "$root/out" || fail "a reinstall of a copied phone asked for the copy again"
+grep -q 'copied earlier' "$root/out" || fail "the summary does not say the copy exists"
+[ ! -e "$known" ] || fail "a reinstall kept the old host key"
+[ "$(jq -r .copy_path "$STATE_FILE")" = "$part_dir" ] || fail "the reinstall lost the record of the copy"
+no_ssh "reinstall of a copied phone"
+
+# Refusals before anything is read from the phone: nothing is run over ssh, and the owner is told sshd is still running.
+echo 1 > "$root/ip_forward"
+rm -f "$known"
+copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "ip_forward=1 exited $rc"
+grep -q 'net.ipv4.ip_forward is 1' "$root/out" || fail "ip_forward=1 was not named"
+grep -q 'sshd may still be running on the phone' "$root/out" || fail "no word on sshd after the refusal"
+no_ssh "ip_forward=1"; no_copy_recorded "ip_forward=1"; [ ! -e "$known" ] || fail "ip_forward=1 still pinned a key"
+echo 0 > "$root/ip_forward"
+FAKE_IP_EXTRA_ROUTE=1 copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a second route exited $rc"
+grep -q 'another interface has a route to the phone.s subnet (127.0.0.0/24 on tailscale0)' "$root/out" || fail "the second route was not named"
+no_ssh "a second route"; no_copy_recorded "a second route"
+FAKE_IP_GET_DEV=tailscale0 copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a route over another interface exited $rc"
+grep -q 'over `tailscale0`, not over usb0' "$root/out" || fail "the route over another interface was not named"
+no_ssh "a route over another interface"
+FAKE_IP_NOADDR=1 copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "no USB interface exited $rc"
+grep -q 'no interface has 127.0.0.2' "$root/out" || fail "the missing USB interface was not named"
+no_ssh "no USB interface"
+# The host key is pinned only by the menu choice (Stop is the last entry).
+rm -f "$known"
+copy_only 'copy\nstop\n'
+[ "$rc" = 1 ] || fail "an untrusted host key exited $rc"
+grep -q 'host key was not trusted' "$root/out" || fail "the untrusted key was not named"
+[ ! -e "$known" ] || fail "an untrusted key was pinned"
+no_ssh "an untrusted host key"; no_copy_recorded "an untrusted host key"
+copy_only 'copy\ntrust\nTrust this phone\n'"$trust"'\n'
+[ "$rc" = 0 ] || fail "typos at the trust phrase exited $rc"
+[ "$(grep -c 'That is not one of trust this phone' "$root/out")" = 2 ] || fail "the trust typos were not asked again"
+# A host key that changed on a later run is refused by ssh; nothing is trusted again.
+cp "$known" "$root/known.before"
+FAKE_SSH_HOSTKEY=AAAAOTHER copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a changed host key exited $rc"
+grep -q 'REMOTE HOST IDENTIFICATION HAS CHANGED' "$root/out" || fail "ssh's refusal was not shown"
+cmp -s "$known" "$root/known.before" || fail "a changed host key was trusted"
+no_copy_recorded "a changed host key"
+grep -q 'sshd may still be running on the phone' "$root/out" || fail "no word on sshd after a changed host key"
+# What the phone has and says.
+mv "$PARTS/fsg" "$root/fsg.away"
+copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a missing partition label exited $rc"
+grep -q 'no partition labelled fsg; its labels are: fsc, modemst1, modemst2, persist' "$root/out" || fail "the missing label was not named with what is there"
+sshd_was_stopped "missing partlabel"; no_copy_recorded "missing partlabel"
+mv "$root/fsg.away" "$PARTS/fsg"
+FAKE_SSH_SERIAL=OTHER9 copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a serial mismatch exited $rc"
+grep -q 'Nura reports serial OTHER9, but this phone is ABC123' "$root/out" || fail "the serial mismatch was not named"
+sshd_was_stopped "serial mismatch"; no_copy_recorded "serial mismatch"
+FAKE_SSH_CORRUPT=modemst1 copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a corrupted stream exited $rc"
+grep -q "modemst1 on this computer hashes to .*, the phone's hash is " "$root/out" || fail "the hash mismatch was not named"
+sshd_was_stopped "hash mismatch"; no_copy_recorded "hash mismatch"
+last=$(ls -d "$cache"/backups/ABC123/partitions-* | tail -1)
+[ ! -e "$last/modemst1.img" ] || fail "a copy that did not hash right was kept"
+[ -e "$last/persist.img" ] && [ ! -e "$last/manifest.txt" ] || fail "an incomplete copy has a manifest or lost a good file"
+FAKE_SSH_BADHASH=fsc copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a wrong hash from the phone exited $rc"
+grep -q "fsc on this computer hashes to .*, the phone's hash is " "$root/out" || fail "the wrong hash from the phone was not named"
+sshd_was_stopped "wrong hash from the phone"
+FAKE_SSH_DDFAIL=modemst2 copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a failed stream exited $rc"
+grep -q 'dd: error reading' "$root/out" || fail "the failure of the stream was not shown"
+sshd_was_stopped "a mid-copy failure"; no_copy_recorded "a mid-copy failure"
+grep -q 'sshd is stopped again' "$root/out" || fail "a mid-copy failure did not say sshd was stopped"
+FAKE_SSH_DDFAIL=modemst2 FAKE_SSH_STOPFAIL=1 copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a failed stream and a failed stop exited $rc"
+[ ! -e "$SSHD_STOPPED" ] || fail "the failing stop stopped sshd"
+grep -q 'sshd may still be running on the phone; stop it there with `sudo systemctl stop sshd`' "$root/out" || fail "a failed stop did not say how to stop sshd"
+# Ctrl-C, hang-up and terminate in the middle of the copy still stop sshd, or say how to.
+interrupt_copy() { # name, signal, expected exit code, env assignments...
+  local name=$1 sig=$2 want=$3
+  shift 3
+  sshd_up
+  rm -rf "$cache"/backups/ABC123/partitions-* "$SSHD_STOPPED"
+  set_record nura-installed
+  : > "$SSH_LOG"
+  printf '%b' "$copy_in" | env FAKE_FB_AFTER=9 FAKE_ADB=none FAKE_SSH_HANG='dd if=' "$@" "$tool" > "$root/out" 2>&1 &
+  local pid=$!
+  wait_for "$SSH_LOG" 'dd if='
+  kill -s "$sig" "$pid"
+  rc=0
+  wait "$pid" || rc=$?
+  [ "$rc" = "$want" ] || fail "$name: exited $rc, not $want"
+  grep -qF 'interrupted: ' "$root/out" || fail "$name: no state line"
+  no_copy_recorded "$name"
+}
+for case in INT:130 TERM:143 HUP:129; do
+  interrupt_copy "$case in the copy" "${case%%:*}" "${case##*:}"
+  sshd_was_stopped "${case%%:*} in the copy"
+  grep -q 'sshd is stopped again' "$root/out" || fail "${case%%:*} in the copy did not say sshd was stopped"
+done
+interrupt_copy "Ctrl-C in the copy with a failing stop" INT 130 FAKE_SSH_STOPFAIL=1
+[ ! -e "$SSHD_STOPPED" ] || fail "the failing stop stopped sshd"
+[ "$(grep -c 'stop it there with `sudo systemctl stop sshd`' "$root/out")" = 1 ] || fail "a failed stop after Ctrl-C did not give the manual command once"
+
+# A partition the phone cannot account for is never kept.
+FAKE_SSH_DUPLABEL=fsg copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "an ambiguous partition label exited $rc"
+grep -q '2 devices on the phone carry the partition label fsg' "$root/out" || fail "the ambiguous label was not named"
+sshd_was_stopped "an ambiguous label"; no_copy_recorded "an ambiguous label"
+FAKE_SSH_NOHOLDER=fsg copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a label with no holder exited $rc"
+grep -q 'no device on the phone carries the partition label fsg' "$root/out" || fail "the label with no holder was not named"
+FAKE_SSH_SIZE_OFF=persist copy_only "$copy_in"
+[ "$rc" = 1 ] || fail "a size mismatch exited $rc"
+grep -q 'persist on this computer is [0-9]* bytes, the partition on the phone is [0-9]*; the copy was dropped' "$root/out" || fail "the size mismatch was not named"
+last=$(ls -d "$cache"/backups/ABC123/partitions-* | tail -1)
+[ ! -e "$last/persist.img" ] || fail "a copy of the wrong size was kept"
+no_copy_recorded "a size mismatch"
+cp "$PARTS/fsc" "$root/fsc.real"
+head -c 4096 /dev/zero > "$PARTS/fsc"
+copy_only "$copy_in"
+cp "$root/fsc.real" "$PARTS/fsc"
+[ "$rc" = 0 ] || fail "a blank partition whose hash equals the phone's exited $rc"
+grep -q 'copy fsc: .*its hash equals the phone.s, all zeros on the phone too' "$root/out" || fail "the blank partition was not kept and named"
+last=$(ls -d "$cache"/backups/ABC123/partitions-* | tail -1)
+[ -e "$last/fsc.img" ] || fail "the blank partition's copy was dropped"
+
+# Skipping, and a phone that never answers.
+sshd_down
+set_record nura-installed
+FAKE_FB_AFTER=9 FAKE_ADB=none run 'skip\n'
+[ "$rc" = 3 ] || fail "skip exited $rc"
+grep -q 'skipped at your request' "$root/out" || fail "skip was not acknowledged"
+grep -q 'sudo systemctl start sshd' "$root/out" || fail "skip did not say how to take the copy later"
+no_ssh "skip"; no_copy_recorded "skip"
+rc=0
+{ printf 'copy\n'; sleep 3; } | FAKE_FB_AFTER=9 FAKE_ADB=none NURA_INSTALL_COPY_WAIT_SECONDS=1 "$tool" > "$root/out" 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail "a phone that never answers exited $rc"
+grep -q 'did not answer within 1 s' "$root/out" || fail "the wait limit was not named"
+no_ssh "a phone that never answers"
+# During an install a skipped or failed copy never fails the install and says clearly it is missing.
+fresh_cache
+FAKE_FB_AFTER=1 run "${fresh_in}skip\n"
+[ "$rc" = 0 ] || fail "an install with a skipped copy exited $rc"
+[ "$(state)" = nura-installed ] || fail "a skipped copy left $(state)"
+no_copy_recorded "an install with a skipped copy"
+grep -q 'The per-phone partitions are NOT copied: skipped at your request' "$root/out" || fail "the summary does not say the copy is missing"
+grep -q 'nura-install. (does only the copy)' "$root/out" || fail "the summary does not say how to take the copy"
+# The copy-only run that follows takes it.
+sshd_up
+FAKE_FB_AFTER=9 FAKE_ADB=none run "$copy_in"
+[ "$rc" = 0 ] || fail "the copy after an install without one exited $rc"
+[ -n "$(jq -r .copy_path "$STATE_FILE")" ] || fail "the late copy was not recorded"
+fresh_cache
+sshd_up
+FAKE_FB_AFTER=1 FAKE_SSH_HANG='cat /proc/cmdline' NURA_INSTALL_SSH_TIMEOUT_SECONDS=1 run "${fresh_in}$copy_in"
+[ "$rc" = 0 ] || fail "an install with a copy that timed out exited $rc"
+[ "$(state)" = nura-installed ] || fail "a copy that timed out left $(state)"
+grep -q 'did not finish within 1 seconds and was killed' "$root/out" || fail "the ssh timeout was not named"
+sshd_was_stopped "an ssh timeout"
+grep -q 'The per-phone partitions are NOT copied' "$root/out" || fail "the summary does not say the copy is missing after a timeout"
+no_copy_recorded "an ssh timeout"
+sshd_down
+# Two installed phones without a copy: the run does not guess which one is meant.
+set_record nura-installed
+mkdir -p -m 700 "$cache/phones/OTHER1" && cp "$STATE_FILE" "$cache/phones/OTHER1/state.json"
+FAKE_FB_AFTER=9 FAKE_ADB=none run "$choice"
+refused "two installed phones without a copy" 'installed phones have no copy'
+rm -rf "$cache/phones/OTHER1"
+# A phone over adb is on Android, whatever its record says: no copy-only run.
+set_record nura-installed
+FAKE_FB_AFTER=9 run "$choice"
+refused "a phone over adb with a record" 'from fastboot' 3
+
 ## Terminal behaviour: spinner on a terminal only, progress in the transcript, Ctrl-C, typed-ahead input
 
 fresh_cache
@@ -1061,9 +1432,9 @@ grep -qE '^  \[ ok \] copy /sdcard: ' "$transcript" || fail "the finished line i
 grep -qE '^choice: phosh \(menu open [0-9.]+ s\)$' "$transcript" || fail "the transcript lacks the choice and how long the menu was open"
 grep -qE '^choice: stop \(menu open' "$transcript" || fail "the transcript lacks the stop"
 # The terminal title (OSC 2) shows the step and its clocks on a terminal, ends with the outcome, and is never in the transcript.
-LC_ALL=C grep -aq -P '\x1b\]2;[^\x07]* nura 10/17 Back up the phone[^\x07]* · [0-9]+:[0-9]{2} \([0-9]+:[0-9]{2}\)\x07' "$root/pty" || fail "no working title on the terminal: $(LC_ALL=C grep -a -o -P '\x1b\]2;[^\x07]*' "$root/pty" | head -3 | cat -v)"
-LC_ALL=C grep -aq -P '\x1b\]2;⏸ nura 13/17 choose an option · ' "$root/pty" || fail "no waiting title at the gate"
-LC_ALL=C grep -aq -P '\x1b\]2;✗ nura stopped at 13/17 · [0-9]+:[0-9]{2}\x07' "$root/pty" || fail "no closing title on the terminal"
+LC_ALL=C grep -aq -P '\x1b\]2;[^\x07]* nura 10/19 Back up the phone[^\x07]* · [0-9]+:[0-9]{2} \([0-9]+:[0-9]{2}\)\x07' "$root/pty" || fail "no working title on the terminal: $(LC_ALL=C grep -a -o -P '\x1b\]2;[^\x07]*' "$root/pty" | head -3 | cat -v)"
+LC_ALL=C grep -aq -P '\x1b\]2;⏸ nura 13/19 choose an option · ' "$root/pty" || fail "no waiting title at the gate"
+LC_ALL=C grep -aq -P '\x1b\]2;✗ nura stopped at 13/19 · [0-9]+:[0-9]{2}\x07' "$root/pty" || fail "no closing title on the terminal"
 ! LC_ALL=C grep -aq -P '\x1b\]2;' "$transcript" || fail "a title escape is in the transcript"
 
 # The first security delay outlasts the one after a move: Enter after the cursor moved long ago is still ignored.
@@ -1115,6 +1486,8 @@ menu_at 'Install Nura (erases Android and all its data)'
 pick_with "$DOWN"
 menu_at 'Reboot the phone (all writes are done)'
 pick_with "$DOWN"
+menu_at 'Skip the copy'
+pick_with "$DOWN$DOWN"
 pty_end
 [ "$rc" = 0 ] || fail "going on without a backup exited $rc"
 ! grep -q 'streaming the phone' "$root/pty" || fail "the phone was read although the backup was skipped"

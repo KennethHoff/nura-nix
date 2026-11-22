@@ -40,6 +40,7 @@
                   curl
                   gnutar
                   jq
+                  netcat-openbsd
                   util-linux
                   xz
                 ];

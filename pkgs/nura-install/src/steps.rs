@@ -261,6 +261,28 @@ pub const REBOOT: Step = tool(
     &["- sends `fastboot reboot`"],
     Some("restarts into the new system"),
 );
+pub const START_SSHD: Step = you(
+    "Start sshd on Nura",
+    "start sshd on Nura",
+    Some("1-3 min for Nura to start, then about 1 min"),
+    &[
+        "[ ] Wait for Nura to start",
+        "[ ] Log in: user / 147147",
+        "[ ] Terminal app on the phone: `sudo systemctl start sshd` (lets this computer copy the partitions)",
+        "[ ] Then choose below: copy, or skip the copy (Nura stays installed; `nura-install` later does only the copy)",
+    ],
+    Some("runs Nura, only sshd starts"),
+);
+pub const COPY: Step = tool(
+    "Copy the per-phone partitions",
+    Some("1-5 min"),
+    &[
+        "- reads persist, modemst1, modemst2, fsg, fsc over the USB network link (IMEI and calibration; no download replaces them)",
+        "- checks each against the phone's hash",
+        "- stops sshd (its password is public)",
+    ],
+    Some("read only, sshd stopped at the end"),
+);
 pub const SUMMARY: Step = tool(
     "Summarize",
     Some("under 10 s"),
@@ -269,7 +291,7 @@ pub const SUMMARY: Step = tool(
 );
 
 #[cfg(test)]
-pub const ALL: [&Step; 22] = [
+pub const ALL: [&Step; 24] = [
     &FIND_BUILDS,
     &CHOOSE_UI,
     &CHECK_COMPUTER,
@@ -291,6 +313,8 @@ pub const ALL: [&Step; 22] = [
     &REINSTALL,
     &APPROVE_REBOOT,
     &REBOOT,
+    &START_SSHD,
+    &COPY,
     &SUMMARY,
 ];
 

@@ -10,6 +10,8 @@ use std::path::Path;
 pub enum Route {
     /// Nura from Android over adb; `wait` when no phone is visible yet and the owner has to connect one.
     Fresh { wait: bool },
+    /// An installed Nura that was never copied: only the copy.
+    CopyOnly { serial: Serial, record: Record },
     /// Nura is installed or half installed and the phone is in fastboot: reinstall or finish the install.
     Nura { serial: Serial, record: Record },
 }
@@ -54,6 +56,24 @@ pub fn decide(cache: &Path) -> Result<Route> {
         return Ok(Route::Fresh { wait: false });
     }
     let mut records = state::all(cache)?;
+    let mut copyable: Vec<_> = records
+        .iter()
+        .filter(|(_, r)| state::copy_only(r, false))
+        .cloned()
+        .collect();
+    match copyable.len() {
+        0 => {}
+        1 => {
+            let (serial, record) = copyable.remove(0);
+            return Ok(Route::CopyOnly { serial, record });
+        }
+        n => {
+            return Err(format!(
+                "{n} installed phones have no copy of their per-phone partitions; connect only the one you mean"
+            )
+            .into())
+        }
+    }
     match records.len() {
         0 => Ok(Route::Fresh { wait: true }),
         1 => {

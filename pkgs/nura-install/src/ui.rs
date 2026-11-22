@@ -235,7 +235,11 @@ fn label_of(active: &Active) -> String {
 /// One heartbeat: notices Ctrl-C, redraws the spinner, writes a progress line to the transcript.
 fn beat() {
     if signals::interrupted() && !signals::in_group() {
-        crate::interrupted();
+        match signals::copy_phase() {
+            signals::Copy::Off => crate::interrupted(),
+            signals::Copy::Session => kill_child(),
+            signals::Copy::Stopping => {}
+        }
     }
     let mut c = lock();
     if signals::in_group() && !c.noted && signals::pending() {

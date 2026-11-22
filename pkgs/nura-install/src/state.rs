@@ -37,12 +37,20 @@ pub struct NuraIdentity {
     pub rootfs_sha256: String,
 }
 
+/// The copy of the per-phone partitions: where it is and when it was taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyRecord {
+    pub path: String,
+    pub time: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Record {
     pub state: State,
     pub slot: Slot,
     pub backup: String,
     pub nura: NuraIdentity,
+    pub copy: Option<CopyRecord>,
 }
 
 impl Record {
@@ -59,6 +67,13 @@ impl Record {
             ..self.clone()
         }
     }
+
+    pub fn with_copy(&self, copy: CopyRecord) -> Record {
+        Record {
+            copy: Some(copy),
+            ..self.clone()
+        }
+    }
 }
 
 fn phone_dir(cache: &Path, serial: &Serial) -> PathBuf {
@@ -69,7 +84,7 @@ fn file(cache: &Path, serial: &Serial) -> PathBuf {
     phone_dir(cache, serial).join("state.json")
 }
 
-const FIELDS: &str = r#"[.state, .slot, .backup, .nura_build, .nura_boot_sha256, .nura_rootfs_sha256] | map(if type == "string" then . else "" end) | @tsv"#;
+const FIELDS: &str = r#"[.state, .slot, .backup, .nura_build, .nura_boot_sha256, .nura_rootfs_sha256, .copy_path, .copy_time] | map(if type == "string" then . else "" end) | @tsv"#;
 
 pub fn read(cache: &Path, serial: &Serial) -> Result<Option<Record>> {
     let path = file(cache, serial);
@@ -80,7 +95,9 @@ pub fn read(cache: &Path, serial: &Serial) -> Result<Option<Record>> {
     let text = stdout_of(Command::new("jq").args(["-r", FIELDS]).arg(&path))
         .map_err(|e| corrupt(format!("unreadable ({e})")))?;
     let fields: Vec<&str> = text.trim_end_matches('\n').split('\t').collect();
-    let [state, slot, backup, nura_build, nura_boot, nura_rootfs] = fields[..] else {
+    let [state, slot, backup, nura_build, nura_boot, nura_rootfs, copy_path, copy_time] =
+        fields[..]
+    else {
         return Err(corrupt("malformed".into()).into());
     };
     let state =
@@ -99,6 +116,14 @@ pub fn read(cache: &Path, serial: &Serial) -> Result<Option<Record>> {
             return Err(corrupt(format!("missing a valid `{name}`")).into());
         }
     }
+    let copy = match (copy_path.is_empty(), copy_time.is_empty()) {
+        (true, true) => None,
+        (false, false) => Some(CopyRecord {
+            path: copy_path.to_string(),
+            time: copy_time.to_string(),
+        }),
+        _ => return Err(corrupt("missing half of the partition copy".into()).into()),
+    };
     Ok(Some(Record {
         state,
         slot,
@@ -108,6 +133,7 @@ pub fn read(cache: &Path, serial: &Serial) -> Result<Option<Record>> {
             boot_sha256: nura_boot.to_string(),
             rootfs_sha256: nura_rootfs.to_string(),
         },
+        copy,
     }))
 }
 
@@ -145,6 +171,10 @@ fn json_string(s: &str) -> String {
 }
 
 fn render(rec: &Record) -> String {
+    let copy = rec.copy.clone().unwrap_or(CopyRecord {
+        path: String::new(),
+        time: String::new(),
+    });
     let fields = [
         ("state", rec.state.name()),
         ("slot", rec.slot.as_str()),
@@ -152,6 +182,8 @@ fn render(rec: &Record) -> String {
         ("nura_build", &rec.nura.build),
         ("nura_boot_sha256", &rec.nura.boot_sha256),
         ("nura_rootfs_sha256", &rec.nura.rootfs_sha256),
+        ("copy_path", &copy.path),
+        ("copy_time", &copy.time),
     ];
     let body: Vec<String> = fields
         .iter()
@@ -184,6 +216,12 @@ pub fn describe(cache: &Path, serial: &Serial) -> String {
     }
 }
 
+/// An installed phone whose per-phone partitions were never copied, and that is not in fastboot, gets
+/// only the copy; in fastboot it is reinstalled.
+pub fn copy_only(rec: &Record, in_fastboot: bool) -> bool {
+    rec.state == State::NuraInstalled && rec.copy.is_none() && !in_fastboot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +237,7 @@ mod tests {
                 boot_sha256: "4".repeat(64),
                 rootfs_sha256: "5".repeat(64),
             },
+            copy: None,
         }
     }
 
@@ -245,6 +284,42 @@ mod tests {
             );
             fs::remove_dir_all(cache).unwrap();
         }
+    }
+
+    #[test]
+    fn the_copy_is_recorded_and_read_back() {
+        let copied = record().with_copy(CopyRecord {
+            path: "/p/partitions-1".into(),
+            time: "20261121T000000Z".into(),
+        });
+        let (cache, serial) = cache_with(&render(&copied));
+        let back = read(&cache, &serial).unwrap().unwrap();
+        assert_eq!(back.copy, copied.copy);
+        let (cache2, serial2) = cache_with(&render(&record()));
+        assert_eq!(read(&cache2, &serial2).unwrap().unwrap().copy, None);
+        let half =
+            render(&copied).replace("\"copy_time\":\"20261121T000000Z\"", "\"copy_time\":\"\"");
+        let (cache3, serial3) = cache_with(&half);
+        assert!(read(&cache3, &serial3).is_err());
+        for c in [cache, cache2, cache3] {
+            fs::remove_dir_all(c).unwrap();
+        }
+    }
+
+    #[test]
+    fn only_an_installed_phone_without_a_copy_outside_fastboot_does_only_the_copy() {
+        let installed = record();
+        let copied = installed.with_copy(CopyRecord {
+            path: "p".into(),
+            time: "t".into(),
+        });
+        assert!(copy_only(&installed, false));
+        assert!(!copy_only(&installed, true));
+        assert!(!copy_only(&copied, false));
+        assert!(!copy_only(
+            &installed.with_state(State::NuraInProgress),
+            false
+        ));
     }
 
     #[test]

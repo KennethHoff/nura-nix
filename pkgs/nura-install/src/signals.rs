@@ -2,7 +2,7 @@
 use crate::fail::Result;
 use std::io;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 
 const GUARDED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGHUP, libc::SIGTERM];
 
@@ -79,10 +79,33 @@ impl Drop for SignalBlock {
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 static SIGNAL: AtomicI32 = AtomicI32::new(libc::SIGINT);
 static IN_GROUP: AtomicBool = AtomicBool::new(false);
+static COPY: AtomicU8 = AtomicU8::new(Copy::Off as u8);
 
 extern "C" fn note_interrupt(sig: libc::c_int) {
     SIGNAL.store(sig, Ordering::Relaxed);
     INTERRUPTED.store(true, Ordering::Relaxed);
+}
+
+/// Where the copy over ssh is, which decides what an interrupt does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Copy {
+    Off = 0,
+    /// Commands run on the phone: an interrupt ends the running command so sshd can be stopped.
+    Session = 1,
+    /// sshd is being stopped: an interrupt waits for that to finish.
+    Stopping = 2,
+}
+
+pub fn set_copy(phase: Copy) {
+    COPY.store(phase as u8, Ordering::Relaxed);
+}
+
+pub fn copy_phase() -> Copy {
+    match COPY.load(Ordering::Relaxed) {
+        1 => Copy::Session,
+        2 => Copy::Stopping,
+        _ => Copy::Off,
+    }
 }
 
 /// Ctrl-C, hang-up and terminate outside a write group only set a flag; the heartbeat thread then
@@ -103,6 +126,11 @@ pub fn install_interrupt() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Forgets an interrupt the run has handled itself (the end of the owner's wait for sshd).
+pub fn clear_interrupt() {
+    INTERRUPTED.store(false, Ordering::Relaxed);
 }
 
 pub fn interrupted() -> bool {

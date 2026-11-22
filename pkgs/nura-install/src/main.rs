@@ -1,6 +1,7 @@
 mod adb;
 mod cmd;
 mod config;
+mod copy;
 mod fail;
 mod fastboot;
 mod group;
@@ -18,6 +19,7 @@ mod state;
 mod steps;
 mod ui;
 
+use copy::{Taken, Wait};
 use fail::{Fail, Result};
 use group::{execute, Group, Origin, Phone};
 use nura::Offer;
@@ -25,7 +27,7 @@ use phone::Serial;
 use preflight::{Facts, Found, Report};
 use prompt::Entry;
 use route::Route;
-use state::{Record, State};
+use state::{CopyRecord, Record, State};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -35,6 +37,7 @@ Takes no arguments: the run follows from the phone's state and its record.
 
   Android over adb, no record     install Nura: one run in four sections (Preflight, Prepare,
                                   Install, Finish)
+  Nura running, not yet copied    only the copy of the per-phone partitions
   Nura installed, phone in fastboot     reinstall Nura
   Nura half installed, phone in fastboot  finish the install
   -h, --help                      this text
@@ -80,6 +83,9 @@ pub fn interrupted() -> ! {
     };
     ui::end_step();
     ui::say(&format!("\ninterrupted: {written} {record}"));
+    if let Some(note) = copy::unstopped_sshd() {
+        ui::say(&note);
+    }
     log::line("outcome: interrupted");
     finish_output("interrupted");
     std::process::exit(i32::from(signals::exit_code()))
@@ -99,6 +105,9 @@ fn finish_output(outcome: &str) {
 }
 
 fn main() -> ExitCode {
+    if let Some(code) = copy::askpass() {
+        return code;
+    }
     match parse_args(std::env::args().skip(1)) {
         Ok(false) => {}
         Ok(true) => {
@@ -147,6 +156,11 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
+enum CopyOutcome {
+    Taken(Taken),
+    Missing { why: String, skipped: bool },
+}
+
 fn run() -> Result<()> {
     let euid = host::harden_process()?;
     let cache = config::cache_dir()?;
@@ -160,6 +174,7 @@ fn run() -> Result<()> {
             match route {
                 Route::Fresh { wait } => install_fresh(&cache, wait),
                 Route::Nura { serial, record } => nura_from_fastboot(&cache, serial, record),
+                Route::CopyOnly { serial, record } => copy_only(&cache, serial, record),
             }
         }
         Err(Fail::Stop(msg)) => unreadable_surroundings(&cache, msg),
@@ -177,6 +192,11 @@ fn unreadable_surroundings(cache: &Path, msg: String) -> Result<()> {
     preflight::computer(&mut report, cache);
     report.conclude("nura-install")?;
     Err(Fail::Stop(msg))
+}
+
+/// Steps of the Nura run from fastboot.
+fn nura_steps(record: &Record) -> u32 {
+    10 + 2 * u32::from(record.copy.is_none())
 }
 
 fn the_run_lost_track<T>() -> Result<T> {
@@ -205,7 +225,7 @@ fn choose_interface(offers: Vec<Offer>) -> Result<Offer> {
 }
 
 fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
-    ui::plan(17 + u32::from(wait));
+    ui::plan(19 + u32::from(wait));
     ui::section("Preflight");
     ui::step(&steps::CHECK_COMPUTER);
     let mut report = Report::new();
@@ -284,6 +304,7 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
         slot,
         backup: backup.map_or_else(|| adb::NO_BACKUP.to_string(), |p| p.display().to_string()),
         nura: nura_identity,
+        copy: None,
     };
     ui::say(&format!(
         "  all fastboot checks passed (slot {})",
@@ -299,16 +320,18 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     ui::step(&steps::APPROVE_INSTALL);
     ui::say(WARNINGS);
     execute(&phone, install, &steps::INSTALL)?;
+    copy::forget_host_key(&phone.cache, &phone.serial)?;
 
     ui::section("Finish");
     ui::step(&steps::APPROVE_REBOOT);
     execute(&phone, Group::reboot()?, &steps::REBOOT)?;
-    finish_nura(&phone)
+    finish_nura(&phone, true)
 }
 
 fn nura_from_fastboot(cache: &Path, serial: Serial, record: Record) -> Result<()> {
+    let copy_pending = record.copy.is_none();
     ui::set_phone(&serial);
-    ui::plan(10);
+    ui::plan(nura_steps(&record));
     ui::section("Preflight");
     ui::say(if record.state == State::NuraInstalled {
         "  Nura is installed: this run reinstalls it."
@@ -359,18 +382,124 @@ fn nura_from_fastboot(cache: &Path, serial: Serial, record: Record) -> Result<()
     ui::step(approve);
     ui::say(WARNINGS);
     execute(&phone, group, apply)?;
+    copy::forget_host_key(&phone.cache, &phone.serial)?;
 
     ui::section("Finish");
     ui::step(&steps::APPROVE_REBOOT);
     execute(&phone, Group::reboot()?, &steps::REBOOT)?;
-    finish_nura(&phone)
+    finish_nura(&phone, copy_pending)
 }
 
-fn finish_nura(phone: &Phone) -> Result<()> {
+fn copy_only(cache: &Path, serial: Serial, record: Record) -> Result<()> {
+    ui::set_phone(&serial);
+    ui::plan(4);
+    ui::section("Preflight");
+    ui::step(&steps::CHECK_RECORD);
+    let mut report = Report::new();
+    preflight::computer(&mut report, cache);
+    preflight::record(&mut report, &serial, &record);
+    report.conclude("nura-install")?;
+    let phone = Phone {
+        serial,
+        cache: cache.to_path_buf(),
+        record,
+    };
+    ui::section("Finish");
+    match copy_steps(&phone)? {
+        CopyOutcome::Taken(taken) => {
+            ui::step(&steps::SUMMARY);
+            ui::say(&format!(
+                "The per-phone partitions are copied to {}.",
+                taken.dir.display()
+            ));
+            Ok(())
+        }
+        CopyOutcome::Missing { why, skipped } => {
+            ui::step(&steps::SUMMARY);
+            ui::say(&format!("The per-phone partitions are NOT copied: {why}."));
+            ui::say(MISSING_COPY);
+            if skipped {
+                Err(Fail::NothingToDo(
+                    "the copy was skipped at your request, so nothing was done".to_string(),
+                ))
+            } else {
+                Err(Fail::Stop(format!("the copy was not taken: {why}")))
+            }
+        }
+    }
+}
+
+const MISSING_COPY: &str = "\
+To copy later:
+  [ ] On Nura (user / 147147): `sudo systemctl start sshd`
+  [ ] Run `nura-install` (does only the copy)";
+
+/// The owner starts sshd, then the tool copies; a skipped or failed copy does not fail the install.
+fn copy_steps(phone: &Phone) -> Result<CopyOutcome> {
+    ui::step(&steps::START_SSHD);
+    let waited = copy::wait_for_sshd();
+    copy::sshd_may_run(matches!(waited, Ok(Wait::Ready)));
+    ui::step(&steps::COPY);
+    let (why, skipped) = match waited {
+        Ok(Wait::Ready) => {
+            let (result, sshd) = copy::run(&phone.cache, &phone.serial);
+            ui::say(&format!("  {sshd}"));
+            match result {
+                Ok(taken) => {
+                    let record =
+                        phone
+                            .record
+                            .with_state(State::NuraInstalled)
+                            .with_copy(CopyRecord {
+                                path: taken.dir.display().to_string(),
+                                time: taken.time.clone(),
+                            });
+                    state::write(&phone.cache, &phone.serial, &record)?;
+                    return Ok(CopyOutcome::Taken(taken));
+                }
+                Err(e) => {
+                    ui::say(&format!("  the copy failed: {e}"));
+                    (e.to_string(), false)
+                }
+            }
+        }
+        Ok(Wait::Skipped) => {
+            ui::say("  nothing is copied: skipped at your request");
+            ("skipped at your request".to_string(), true)
+        }
+        Err(e) => {
+            ui::say(&format!("  nothing is copied: {e}"));
+            (e.to_string(), false)
+        }
+    };
+    Ok(CopyOutcome::Missing { why, skipped })
+}
+
+fn finish_nura(phone: &Phone, copy_pending: bool) -> Result<()> {
+    let outcome = if copy_pending {
+        Some(copy_steps(phone)?)
+    } else {
+        None
+    };
     ui::step(&steps::SUMMARY);
     ui::say("Nura is booting. Log in as `user` with password 147147.");
     ui::say("  - kernel updates only while the phone is charged and plugged in");
     ui::say(&backup_note(&phone.record.backup));
+    match (outcome, &phone.record.copy) {
+        (Some(CopyOutcome::Taken(taken)), _) => ui::say(&format!(
+            "The per-phone partitions are copied to {}.",
+            taken.dir.display()
+        )),
+        (Some(CopyOutcome::Missing { why, .. }), _) => {
+            ui::say(&format!("The per-phone partitions are NOT copied: {why}."));
+            ui::say(MISSING_COPY);
+        }
+        (None, Some(copy)) => ui::say(&format!(
+            "The per-phone partitions were copied earlier, to {} ({}).",
+            copy.path, copy.time
+        )),
+        (None, None) => {}
+    }
     Ok(())
 }
 

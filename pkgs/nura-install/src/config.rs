@@ -70,6 +70,41 @@ pub fn curl_bin() -> OsString {
     tool("NURA_INSTALL_CURL", "curl")
 }
 
+pub fn ssh_bin() -> OsString {
+    tool("NURA_INSTALL_SSH", "ssh")
+}
+
+pub fn ssh_keyscan_bin() -> OsString {
+    tool("NURA_INSTALL_SSH_KEYSCAN", "ssh-keyscan")
+}
+
+pub fn ssh_keygen_bin() -> OsString {
+    tool("NURA_INSTALL_SSH_KEYGEN", "ssh-keygen")
+}
+
+pub fn ip_bin() -> OsString {
+    tool("NURA_INSTALL_IP", "ip")
+}
+
+/// Nura's USB network: the phone serves 172.16.42.1 and gives the computer 172.16.42.2.
+pub fn phone_addr() -> String {
+    hook("NURA_INSTALL_PHONE_ADDR")
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "172.16.42.1:22".to_string())
+}
+
+pub fn local_addr() -> String {
+    hook("NURA_INSTALL_LOCAL_ADDR")
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "172.16.42.2".to_string())
+}
+
+pub fn ip_forward_file() -> PathBuf {
+    hook("NURA_INSTALL_IP_FORWARD_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/proc/sys/net/ipv4/ip_forward"))
+}
+
 pub fn allow_file_urls() -> bool {
     hook("NURA_INSTALL_ALLOW_FILE_URLS").is_some_and(|v| v == "1")
 }
@@ -100,6 +135,18 @@ pub fn needed_gib() -> Result<u64> {
 /// Ctrl-C ends them. Only the tests set one.
 pub fn wait_limit() -> Result<Option<Duration>> {
     Ok(hook_number("NURA_INSTALL_WAIT_SECONDS")?.map(Duration::from_secs))
+}
+
+/// The wait for sshd on Nura has no limit either: `skip` or Ctrl-C ends it.
+pub fn copy_wait_limit() -> Result<Option<Duration>> {
+    Ok(hook_number("NURA_INSTALL_COPY_WAIT_SECONDS")?.map(Duration::from_secs))
+}
+
+/// The longest one ssh command to the phone may take.
+pub fn ssh_timeout() -> Result<Duration> {
+    Ok(Duration::from_secs(
+        hook_number("NURA_INSTALL_SSH_TIMEOUT_SECONDS")?.unwrap_or(600),
+    ))
 }
 
 /// How often a long step writes a plain progress line to the transcript.
@@ -156,6 +203,15 @@ mod tests {
             "NURA_INSTALL_NEEDED_GIB",
             "NURA_INSTALL_WAIT_SECONDS",
             "NURA_INSTALL_WRITE_TIMEOUT_SECONDS",
+            "NURA_INSTALL_SSH",
+            "NURA_INSTALL_SSH_KEYSCAN",
+            "NURA_INSTALL_SSH_KEYGEN",
+            "NURA_INSTALL_IP",
+            "NURA_INSTALL_PHONE_ADDR",
+            "NURA_INSTALL_LOCAL_ADDR",
+            "NURA_INSTALL_IP_FORWARD_FILE",
+            "NURA_INSTALL_COPY_WAIT_SECONDS",
+            "NURA_INSTALL_SSH_TIMEOUT_SECONDS",
         ] {
             std::env::set_var(var, "1");
         }
@@ -164,6 +220,18 @@ mod tests {
         assert_eq!(adb_bin(), "adb");
         assert_eq!(fastboot_bin(), "fastboot");
         assert_eq!(curl_bin(), "curl");
+        assert_eq!(ssh_bin(), "ssh");
+        assert_eq!(ssh_keyscan_bin(), "ssh-keyscan");
+        assert_eq!(ssh_keygen_bin(), "ssh-keygen");
+        assert_eq!(ip_bin(), "ip");
+        assert_eq!(phone_addr(), "172.16.42.1:22");
+        assert_eq!(local_addr(), "172.16.42.2");
+        assert_eq!(
+            ip_forward_file(),
+            PathBuf::from("/proc/sys/net/ipv4/ip_forward")
+        );
+        assert_eq!(copy_wait_limit().unwrap(), None);
+        assert_eq!(ssh_timeout().unwrap(), Duration::from_secs(600));
         assert!(!allow_file_urls());
         assert!(!allow_piped_input());
         assert_eq!(security_delay().unwrap(), Duration::from_secs(3));

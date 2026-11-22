@@ -233,3 +233,16 @@ pub fn to_file(cmd: &mut Command, dest: &Path, errors: Option<&Path>) -> Result<
         },
     )
 }
+
+/// Runs jq over `input` with `args`; the filter is the last of them.
+pub fn jq(args: &[&str], input: &str) -> Result<String> {
+    Ok(run(
+        Command::new("jq").args(args),
+        Spec {
+            stdin: Some(input),
+            ..Spec::default()
+        },
+    )?
+    .success()?
+    .stdout)
+}

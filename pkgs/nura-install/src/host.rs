@@ -266,19 +266,39 @@ pub fn timestamp() -> Result<String> {
     )
 }
 
+enum Probe {
+    /// Run the program with this argument; it must exit 0.
+    Run(&'static str),
+    /// Only find it: the program has no flag that exits 0.
+    Find,
+}
+
 struct Tool {
     program: OsString,
-    arg: &'static str,
+    probe: Probe,
+}
+
+fn found(program: &OsString) -> bool {
+    let path = Path::new(program);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|dirs| std::env::split_paths(&dirs).any(|d| d.join(program).is_file()))
 }
 
 /// What the run needs on this computer: every program starts.
 pub fn check_tools() -> Result<((), String)> {
-    let tool = |program: OsString, arg| Tool { program, arg };
-    let plain = |name: &str, arg| tool(name.into(), arg);
+    let tool = |program: OsString, probe| Tool { program, probe };
+    let plain = |name: &str, arg| tool(name.into(), Probe::Run(arg));
     let tools = [
-        tool(config::adb_bin(), "version"),
-        tool(config::fastboot_bin(), "--version"),
-        tool(config::curl_bin(), "--version"),
+        tool(config::adb_bin(), Probe::Run("version")),
+        tool(config::fastboot_bin(), Probe::Run("--version")),
+        tool(config::curl_bin(), Probe::Run("--version")),
+        tool(config::ssh_bin(), Probe::Run("-V")),
+        tool(config::ssh_keyscan_bin(), Probe::Find),
+        tool(config::ssh_keygen_bin(), Probe::Find),
+        tool(config::ip_bin(), Probe::Run("-V")),
         plain("jq", "--version"),
         plain("sha256sum", "--version"),
         plain("xz", "--version"),
@@ -290,10 +310,19 @@ pub fn check_tools() -> Result<((), String)> {
     let count = tools.len();
     for tool in tools {
         let name = Path::new(&tool.program).display().to_string();
-        let out = capture(Command::new(&tool.program).arg(tool.arg))
-            .map_err(|e| format!("prerequisite {name} does not run: {e}"))?;
-        out.success()
-            .map_err(|e| format!("prerequisite {name} does not run: {e}"))?;
+        match tool.probe {
+            Probe::Run(arg) => {
+                let out = capture(Command::new(&tool.program).arg(arg))
+                    .map_err(|e| format!("prerequisite {name} does not run: {e}"))?;
+                out.success()
+                    .map_err(|e| format!("prerequisite {name} does not run: {e}"))?;
+            }
+            Probe::Find => {
+                if !found(&tool.program) {
+                    return Err(format!("prerequisite {name} does not run: not found").into());
+                }
+            }
+        }
     }
     Ok(((), format!("all {count} are there")))
 }

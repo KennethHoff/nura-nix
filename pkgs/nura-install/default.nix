@@ -2,8 +2,8 @@
 #
 # ## Why it shells out
 #
-# It runs adb, fastboot, curl, jq, tar and xz instead of
-# linking crates for USB, HTTP, JSON and LZMA, so the only
+# It runs adb, fastboot, curl, jq, tar, xz, ssh and ip instead of
+# linking crates for USB, HTTP, JSON, LZMA, SSH and netlink, so the only
 # crate is libc, for the effective user id, the umask, holding signals during a
 # group of writes and reading the terminal without buffering. The wrapper puts
 # those tools on PATH.
@@ -16,7 +16,7 @@
 # exported NURA_INSTALL_* variable changes nothing in the shipped binary.
 # With `testHooks = true` the crate's `test-hooks` feature also reads
 # NURA_INSTALL_* from the environment, which lets the flake check stand in for the
-# phone, the image servers and the terminal. Only the flake check
+# phone, the image servers, the SSH tools and the terminal. Only the flake check
 # builds that.
 {
   lib,
@@ -26,7 +26,9 @@
   coreutils,
   curl,
   gnutar,
+  iproute2,
   jq,
+  openssh,
   xz,
   cacheDir ? null,
   testHooks ? false,
@@ -61,7 +63,9 @@ rustPlatform.buildRustPackage {
           coreutils
           curl
           gnutar
+          iproute2
           jq
+          openssh
           xz
         ]
       }
