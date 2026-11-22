@@ -6,7 +6,8 @@
   outputs =
     { self, nixpkgs }:
     let
-      # The tool builds for Linux only: it relies on GNU coreutils' `df`.
+      # adb and fastboot reach the phone through udev-granted USB access, and the partition copy
+      # reads Linux's network state, so the tool builds for Linux only.
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -40,7 +41,8 @@
                 ];
               }
               ''
-                bash ${./tests/nura-install-test.sh} ${pkgs.lib.getExe hooked} ${pkgs.lib.getExe shipped} ${shippedCacheDir}
+                FP6_GETVAR_ALL=${./tests/fixtures/fp6-getvar-all.txt} NURA_FIXTURE=${./tests/fixtures/nura-index.json} \
+                  bash ${./tests/nura-install-test.sh} ${pkgs.lib.getExe hooked} ${pkgs.lib.getExe shipped} ${shippedCacheDir}
                 touch $out
               '';
         }

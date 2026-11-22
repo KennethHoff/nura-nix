@@ -2,7 +2,7 @@
 #
 # ## Why it shells out
 #
-# It runs date and df instead of linking crates for them, so the only
+# It runs adb and fastboot instead of linking a crate for USB, so the only
 # crate is libc, for the effective user id, the umask and catching Ctrl-C. The wrapper puts
 # those tools on PATH.
 #
@@ -12,13 +12,14 @@
 # as `NURA_INSTALL_CACHE` when set (otherwise the cache is $XDG_DATA_HOME/nura-install), so an
 # exported NURA_INSTALL_* variable changes nothing in the shipped binary.
 # With `testHooks = true` the crate's `test-hooks` feature also reads
-# NURA_INSTALL_* from the environment, which lets the flake check set the cache and the disk
-# space it asks for. Only the flake check
+# NURA_INSTALL_* from the environment, which lets the flake check stand in for the
+# phone. Only the flake check
 # builds that.
 {
   lib,
   rustPlatform,
   makeWrapper,
+  android-tools,
   coreutils,
   cacheDir ? null,
   testHooks ? false,
@@ -48,6 +49,7 @@ rustPlatform.buildRustPackage {
     wrapProgram $out/bin/nura-install \
       --prefix PATH : ${
         lib.makeBinPath [
+          android-tools
           coreutils
         ]
       }

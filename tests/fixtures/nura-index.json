@@ -1,0 +1,490 @@
+{
+  "releases": [
+    {
+      "name": "edge",
+      "pretty_name": "edge (unstable)",
+      "devices": [
+        {
+          "name": "fairphone-fp5",
+          "pretty_name": "Fairphone 5",
+          "interfaces": [
+            {
+              "name": "gnome-mobile",
+              "pretty_name": "GNOME Mobile",
+              "images": [
+                {
+                  "name": "20261106-1651-nura-edge-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-06T16:51:00",
+                  "size": 28126044,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/gnome-mobile/20261106-1651/20261106-1651-nura-edge-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "a55b122971c2bfc88c4a545c3f302cf7a30344edc84b69949882732534a96eb3",
+                  "sha512": "45f2b91489c2c8af505c850ee4c5b29a71d3d8472d77e0fbf3306ba0fff30c57f30f57d880a76d4c54d95e4a4a551f3ca37386372ff28fb2e920372214a6f49d"
+                },
+                {
+                  "name": "20261106-1651-nura-edge-gnome-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-06T16:51:00",
+                  "size": 832419484,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/gnome-mobile/20261106-1651/20261106-1651-nura-edge-gnome-mobile-fairphone-fp5.img.xz",
+                  "sha256": "83c30b33264a1cd61ce33a595d5098b6e73f820daeaae457eb55c15140a2a196",
+                  "sha512": "de915cbda8874f4c8fccef256f3ce24b54780eca8cd49aa0f6134ef312d7732ad9c556dc73e6e258e4eca3faa657c1b50ce452a7bfca72d45da4150cd1ee52ef"
+                },
+                {
+                  "name": "20261113-2321-nura-edge-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-13T23:21:00",
+                  "size": 28140596,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/gnome-mobile/20261113-2321/20261113-2321-nura-edge-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "235d1ac4425933840f75688d346fbbf2297999fec9a644abbc33b9904fb50d2a",
+                  "sha512": "d67da770bd0fc111f57f91b9ee54e2fde4a2d7bb44c78e36f74b093ba856cd7e0190a94868822b3fd569fe1afa076f563fe2bf48e831a8963511632afc81252e"
+                },
+                {
+                  "name": "20261113-2321-nura-edge-gnome-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-13T23:21:00",
+                  "size": 833037984,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/gnome-mobile/20261113-2321/20261113-2321-nura-edge-gnome-mobile-fairphone-fp5.img.xz",
+                  "sha256": "b61f135f7699cf8ca4a470c1a6f2a4255b8b6eb5e9278d807a21c8b6caa4ccc5",
+                  "sha512": "edf14e23917a02f85fa1b5d35a9ca795e0a9904ea7f42f17d8cc8739c8e579c3c4b2d0e5bad053fa9502eef4f2d4c74ddb407c9400f409c0b3fe091773c6de77"
+                }
+              ]
+            },
+            {
+              "name": "phosh",
+              "pretty_name": "Phosh",
+              "images": [
+                {
+                  "name": "20261106-1653-nura-edge-phosh-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-06T16:53:00",
+                  "size": 28126040,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/phosh/20261106-1653/20261106-1653-nura-edge-phosh-fairphone-fp5-boot.img.xz",
+                  "sha256": "2c1970a32fb83f8cb7810aa61b708988a20f1228575fd174b0c8f0d9f9ba26fd",
+                  "sha512": "7e018cdea40259f61613b38ff1851f5bcbc9eb11db195c79712cbf8eb2c9910f7e1e0e341483863d468b892190e21f922499549effc4d5187333986193657e36"
+                },
+                {
+                  "name": "20261106-1653-nura-edge-phosh-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-06T16:53:00",
+                  "size": 825640052,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/phosh/20261106-1653/20261106-1653-nura-edge-phosh-fairphone-fp5.img.xz",
+                  "sha256": "f3dc8a2f97b985c5606b6d3f0be46697eb8cd8dfe6d15a96027d10dd2662a54d",
+                  "sha512": "703168b99decb769d17010528c6c92adbe8ed5124ee0b3015a93b487cb382a57afb060eb10c0481b0dd7d699f65fc8963c2eabf6468e45897206e23c88f31536"
+                },
+                {
+                  "name": "20261113-2322-nura-edge-phosh-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-13T23:22:00",
+                  "size": 28140596,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/phosh/20261113-2322/20261113-2322-nura-edge-phosh-fairphone-fp5-boot.img.xz",
+                  "sha256": "481041814e2545c954d9e1589c36d076af04e3d817200cda07beb55120d58ec1",
+                  "sha512": "bcf879c078b5217524db90d0f7ef6f84c342fb915069b9ee345c96f0b9f8ffad16b4853967894cd33046abfa4c8d0b1eedf1b7dedc43ed1ed2ef3006dccde5fb"
+                },
+                {
+                  "name": "20261113-2322-nura-edge-phosh-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-13T23:22:00",
+                  "size": 826189000,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/phosh/20261113-2322/20261113-2322-nura-edge-phosh-fairphone-fp5.img.xz",
+                  "sha256": "9ab9bbba1982b200a53ff5bd8cd903c1876b33d13311c3ccb067e5b516db9483",
+                  "sha512": "9f43ce728fb9f9d1db7b710e5a12e9ef7436e3a041d71df771be375459553ee726570f841b7b4088f7a403cae0f047ca15f2d4a6e7b4404a2769a6195ae19b9d"
+                }
+              ]
+            },
+            {
+              "name": "plasma-mobile",
+              "pretty_name": "Plasma Mobile",
+              "images": [
+                {
+                  "name": "20261106-1656-nura-edge-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-06T16:56:00",
+                  "size": 28126044,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/plasma-mobile/20261106-1656/20261106-1656-nura-edge-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "bec735afd1dff87eccb33c7fc15ca2db048a4333d27ac2f7c1c24c05cb20d932",
+                  "sha512": "1bcb8e896548f88596506dbf1510c91ab512a59b4baa5c6c1b81fe7c070c102793122aba0d021d4f42de378db9f4d256929d1de6c2bf66787f8b879bc8754803"
+                },
+                {
+                  "name": "20261106-1656-nura-edge-plasma-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-06T16:56:00",
+                  "size": 1085284124,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/plasma-mobile/20261106-1656/20261106-1656-nura-edge-plasma-mobile-fairphone-fp5.img.xz",
+                  "sha256": "a5ffa29b1a4c4a9404714e214dc2fb802bd30f87efe8ccc896b6129f3b9dd06a",
+                  "sha512": "6f1dd1bb4ed101b5afdcdcf61fe96ce09d69972ea2156329ab3253f66ca229c8ca296c21a2ce779f1e2ba7a68e282cf75228d183b110254d181051133d153f58"
+                },
+                {
+                  "name": "20261113-2326-nura-edge-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-13T23:26:00",
+                  "size": 28140596,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/plasma-mobile/20261113-2326/20261113-2326-nura-edge-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "638997edbc676a3160fe7f529083c67919ae91a9b1f5eeedef07c3a7523973ff",
+                  "sha512": "d33dbb406d158492c79e83b66884768bb29b0ce24d6a479278246440349e652ff6198efe6675808ebf40c304c0299af6f2ddf6f429a17ec7c08ae5fc817fc5df"
+                },
+                {
+                  "name": "20261113-2326-nura-edge-plasma-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-13T23:26:00",
+                  "size": 1084946776,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/plasma-mobile/20261113-2326/20261113-2326-nura-edge-plasma-mobile-fairphone-fp5.img.xz",
+                  "sha256": "e53153b0d279af7f3df58a9da4e00fbccf9c65f70ede9f54f4c79802e309e1c2",
+                  "sha512": "a09e2b2c82cb49d2ddccfef095b09932fb34185ee0951273aa872eb19f9bef7b71f5c08ed782f76ae205c94d4d9d5c041a7b9f2ab5a28c1bee7922062d7e624c"
+                }
+              ]
+            },
+            {
+              "name": "sxmo-de-sway",
+              "pretty_name": "Sxmo (Sway)",
+              "images": [
+                {
+                  "name": "20261106-1658-nura-edge-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-06T16:58:00",
+                  "size": 28126044,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/sxmo-de-sway/20261106-1658/20261106-1658-nura-edge-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "sha256": "cb100ced242f69511c1ad5688f2905a649686dc6f6405e1f99e5217c59de322b",
+                  "sha512": "e24a865f3e68717470c8efddab2cfc6974b90739f3d50573f91c7755bcc5029271949eff224900f10e411031c98ab16efc002ca90f42ae4e29953c6e318acff3"
+                },
+                {
+                  "name": "20261106-1658-nura-edge-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-06T16:58:00",
+                  "size": 569701808,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/sxmo-de-sway/20261106-1658/20261106-1658-nura-edge-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "sha256": "3f62a4904cfa42e7c5ebbedd0a54f9c590f957e39afdda1e02e58b2376ebf225",
+                  "sha512": "a8a6a19dcfa0d93dbb45d9b1f13a71eda065fd2abd9f25366b9ba72ac7643193a261a42fa99c72df4b4c2bd4472f87891729e9440347320a1d1dc9b88f1d5818"
+                },
+                {
+                  "name": "20261113-2327-nura-edge-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-13T23:27:00",
+                  "size": 28140596,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/sxmo-de-sway/20261113-2327/20261113-2327-nura-edge-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "sha256": "e3e2811d0bf8662d4af8fd4b893ab68cd2d6b9a3ef58f35e204eefdc684e537a",
+                  "sha512": "37d8f9c350908ba8f82c67f03201d8752b013874570f65410eb22acb62cecf355b21d112cea585f18c814b0884cdc5f04df6c428a328f1441d7423fc3360df18"
+                },
+                {
+                  "name": "20261113-2327-nura-edge-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-13T23:27:00",
+                  "size": 570390736,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp5/sxmo-de-sway/20261113-2327/20261113-2327-nura-edge-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "sha256": "4c3ef95d4de8e57aa57e402994f3f94353eb88aae1fb122fccb6848eaeae4d2c",
+                  "sha512": "f9fa9157a025e691728a376766267ed1b68828deffe26b33e3d92521684da918b4dbc959283414b50cbc106bb67ab6cece7c17f7a84898930e737cbbd4467fb5"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "fairphone-fp6",
+          "pretty_name": "Fairphone (Gen. 6)",
+          "interfaces": [
+            {
+              "name": "phosh",
+              "pretty_name": "Phosh",
+              "images": [
+                {
+                  "name": "20261106-1702-nura-edge-phosh-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-06T17:02:00",
+                  "size": 27285472,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/phosh/20261106-1702/20261106-1702-nura-edge-phosh-fairphone-fp6-boot.img.xz",
+                  "sha256": "c94d7dd93e5856cc9d2bcf79201557fadde0ae6ab817e6080b558761210a009f",
+                  "sha512": "0c33119446803627cbaaa99e90b833f45f63cb2d5afaec1ccb86e738e92bf37ba12dfe0f7bc21ff753c68b720365dbb7d4995c64a2c1b94f2b2eb941dde59c1b"
+                },
+                {
+                  "name": "20261106-1702-nura-edge-phosh-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-06T17:02:00",
+                  "size": 789062624,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/phosh/20261106-1702/20261106-1702-nura-edge-phosh-fairphone-fp6.img.xz",
+                  "sha256": "a386fe86e6e8fdbe17abe7571e1b50ef5bba45ea18a2062a6b3ac99994fd84d4",
+                  "sha512": "cbb1b2e4157c87172f45a88d13a7f1a4218d3236f4e73b5e8d873a38a0f083ae57af44775ef0fa0253f03a24d72f932507e8c7cf6c55474d166b19ae97a1683c"
+                },
+                {
+                  "name": "20261113-2332-nura-edge-phosh-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-13T23:32:00",
+                  "size": 27301668,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/phosh/20261113-2332/20261113-2332-nura-edge-phosh-fairphone-fp6-boot.img.xz",
+                  "sha256": "6457ed9a399028c0dd233145f45b5363c95e07a2d6e36470c2d4597a599f7c8d",
+                  "sha512": "5e02d00b9e31054a1ad31292f922e1e97cdf77b3950f3d349c3005235bb4142c3793af31f1023be62e33341e4f9e41b88187b58498af1819411a05b466dc9756"
+                },
+                {
+                  "name": "20261113-2332-nura-edge-phosh-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-13T23:32:00",
+                  "size": 789618208,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/phosh/20261113-2332/20261113-2332-nura-edge-phosh-fairphone-fp6.img.xz",
+                  "sha256": "893c268b0fe8b34e4b28f40b40d19295ae9886e13923b52b7cb91599549aa82a",
+                  "sha512": "4ac45950f5b43e5a557e05802b7266a990c06328a2531aeba1040a436309262a504b8ab346060bde7a547b57cedc74f442224a7b2f24054a276a38a58847cefd"
+                }
+              ]
+            },
+            {
+              "name": "sxmo-de-sway",
+              "pretty_name": "Sxmo (Sway)",
+              "images": [
+                {
+                  "name": "20261106-1713-nura-edge-sxmo-de-sway-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-06T17:13:00",
+                  "size": 27285468,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/sxmo-de-sway/20261106-1713/20261106-1713-nura-edge-sxmo-de-sway-fairphone-fp6-boot.img.xz",
+                  "sha256": "4b3d7a82986ee743fe1ae28326857bbe628548b2265f575025584cbb814c61da",
+                  "sha512": "24c413c3521f0c7ace1c7e7808ec400a056604cce9cb039f407b89a1b5ee04988bfcd67162b0f3fd52b3fa535b1d302f0b5640d0cc79cde117ba0f32800de147"
+                },
+                {
+                  "name": "20261106-1713-nura-edge-sxmo-de-sway-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-06T17:13:00",
+                  "size": 532842988,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/sxmo-de-sway/20261106-1713/20261106-1713-nura-edge-sxmo-de-sway-fairphone-fp6.img.xz",
+                  "sha256": "b358c078d1536438b0f785de6af4b769bdfbc6f89ac7fded02b7fcc7e1bbfda2",
+                  "sha512": "58f15346cb193c264937a53a3c82c329740f32489a0df706ed976ca2a55cf63127d529d2767e107aeb2dcb38b6025500918d2e6bd771f4ca0568cde95af39153"
+                },
+                {
+                  "name": "20261113-2336-nura-edge-sxmo-de-sway-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-13T23:36:00",
+                  "size": 27301668,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/sxmo-de-sway/20261113-2336/20261113-2336-nura-edge-sxmo-de-sway-fairphone-fp6-boot.img.xz",
+                  "sha256": "62947f50376f76b5d19ff33ece3beac60a6e388e8d3a3fca57f2a9d3f7a50e9a",
+                  "sha512": "b56d159dce8c0f8a82abbd2ecbce4bbdb0bee2ffae937969ebc4e977c933740a61836b2c4bc02dc5c45f766386ca45f9bdce10a7ce4e295c79ae4d6d9cfcd1c1"
+                },
+                {
+                  "name": "20261113-2336-nura-edge-sxmo-de-sway-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-13T23:36:00",
+                  "size": 533870156,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/sxmo-de-sway/20261113-2336/20261113-2336-nura-edge-sxmo-de-sway-fairphone-fp6.img.xz",
+                  "sha256": "93b9e7fba23103658b22a7f6c0385696db679215a5fa20f1f87cf55bbb4769f9",
+                  "sha512": "f4b3910aad4a88c090562a080fb9b4708f063222f87b8a65fe8188ef485e0d98c799936a8f2314990335c7e808194f90c8b5ee867c391a9e971e7a0fe87ef4db"
+                }
+              ]
+            },
+            {
+              "name": "plasma-mobile",
+              "pretty_name": "Plasma Mobile",
+              "images": [
+                {
+                  "name": "20261106-1707-nura-edge-plasma-mobile-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-06T17:07:00",
+                  "size": 27285472,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/plasma-mobile/20261106-1707/20261106-1707-nura-edge-plasma-mobile-fairphone-fp6-boot.img.xz",
+                  "sha256": "ec1fadf509473ed2727e270943c0848fba9f3a56e01f54dce83e323ed18dfa6a",
+                  "sha512": "733f1d58ee1e70d459bde7bd8e8a0b2b73a7803743420c2f741fde9e718c19fc9fa9aedfd0d56baebf56653c76ea23922e4ccace24b5d42cea4d9e38b0c5fbe3"
+                },
+                {
+                  "name": "20261106-1707-nura-edge-plasma-mobile-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-06T17:07:00",
+                  "size": 1048741080,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/plasma-mobile/20261106-1707/20261106-1707-nura-edge-plasma-mobile-fairphone-fp6.img.xz",
+                  "sha256": "0e0381fbc955b584220c1e13cda739eec628d6db70bfa4043cdbad79f3d0dc8a",
+                  "sha512": "30eea9437bcb36d864c666cb361a379d11aa35ac970f0ba852bb74199608875709ce8844c53af84e372f6fd06b714a0df6df2dfd6db80fe6fae418b0149a80e5"
+                },
+                {
+                  "name": "20261113-2336-nura-edge-plasma-mobile-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-13T23:36:00",
+                  "size": 27301668,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/plasma-mobile/20261113-2336/20261113-2336-nura-edge-plasma-mobile-fairphone-fp6-boot.img.xz",
+                  "sha256": "c95e370a592667173f1307a926ec3f659294e4572a2dcfe73b2146f3bba4cc1e",
+                  "sha512": "2831e422cc6f565e8dd76c8a6feec610fd0bb2f1dc1e62961436cc97908549b9ab55635cd0782f35756c08de84675f55a7fe09572532f67ff14b28f69a74aa2d"
+                },
+                {
+                  "name": "20261113-2336-nura-edge-plasma-mobile-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-13T23:36:00",
+                  "size": 1048370720,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/plasma-mobile/20261113-2336/20261113-2336-nura-edge-plasma-mobile-fairphone-fp6.img.xz",
+                  "sha256": "f3466d678b6d07bd22488030a5c313cb7435e2f8d4d260a81b9bfe787998a099",
+                  "sha512": "50e71c95bce1d07776282dbd3a6f61da56095fdf75be71058de079f659a091aee336b872e023c37ad88caabda917f9d5688835b8d64f5f0eea4d8af284f218be"
+                }
+              ]
+            },
+            {
+              "name": "gnome-mobile",
+              "pretty_name": "GNOME Mobile",
+              "images": [
+                {
+                  "name": "20261106-1702-nura-edge-gnome-mobile-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-06T17:02:00",
+                  "size": 27285472,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/gnome-mobile/20261106-1702/20261106-1702-nura-edge-gnome-mobile-fairphone-fp6-boot.img.xz",
+                  "sha256": "35e730c82781e4db24f022beafb2346ed0958757c2111cff1ea8cc1a6a216fff",
+                  "sha512": "e66a71d3fc423689307a16cb9b57ed6f548874215e452d07e5d133418967e4eac0a61f5bf0c9a644f42f4aba106d878331d02b351b59fc4afeff00394d3b3e23"
+                },
+                {
+                  "name": "20261106-1702-nura-edge-gnome-mobile-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-06T17:02:00",
+                  "size": 795832044,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/gnome-mobile/20261106-1702/20261106-1702-nura-edge-gnome-mobile-fairphone-fp6.img.xz",
+                  "sha256": "3c6b6f62249c327ea746045a0bf64588ae37ee912ebf90a84e60c8ff549d6ef7",
+                  "sha512": "a72b6d80b06c603390974cf0c2b8cf144822d2923c2e8e749a0a32554fcf82ec85761488d35b106ab21239af33ec48c2b67c0059f30bc6c753bee58e8859ec6d"
+                },
+                {
+                  "name": "20261113-2331-nura-edge-gnome-mobile-fairphone-fp6-boot.img.xz",
+                  "timestamp": "2026-11-13T23:31:00",
+                  "size": 27301668,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/gnome-mobile/20261113-2331/20261113-2331-nura-edge-gnome-mobile-fairphone-fp6-boot.img.xz",
+                  "sha256": "b9adde7b16d9000b1c2bcfcee5ef679371a71ae3c1f4225c1d3d81d67baaf15f",
+                  "sha512": "7f3f36310b98718d06e69ce4b6fb50397844c0b3c487864362a89345fea975570ce44b74b5bbbe7625fdf9c09f63a6013ff87a66792f2e58967210348ef6861a"
+                },
+                {
+                  "name": "20261113-2331-nura-edge-gnome-mobile-fairphone-fp6.img.xz",
+                  "timestamp": "2026-11-13T23:31:00",
+                  "size": 796669416,
+                  "url": "https://images.nura.eco/bpo/edge/fairphone-fp6/gnome-mobile/20261113-2331/20261113-2331-nura-edge-gnome-mobile-fairphone-fp6.img.xz",
+                  "sha256": "606e3ec5832e201759abdba8aece5acca37f60f274b5245d3a623f0a2e989693",
+                  "sha512": "05c999b0dc67d9d43b8609d5e5cd32412cb3296013193b2789d8c96ff2c3ffa5ec791e1423ae1e6ec96016eed1db5bb60c88da81a78bce68229db90bb5574f97"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "v26.06",
+      "pretty_name": "v26.06",
+      "devices": [
+        {
+          "name": "fairphone-fp5",
+          "pretty_name": "Fairphone 5",
+          "interfaces": [
+            {
+              "name": "plasma-mobile",
+              "pretty_name": "Plasma Mobile",
+              "images": [
+                {
+                  "name": "20261113-0528-nura-v26.06-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-13T05:28:00",
+                  "size": 25380896,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/plasma-mobile/20261113-0528/20261113-0528-nura-v26.06-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "c8d97a00caaca4d9eef9dba74a749220547609871dd3f712f9dd372a359bb315",
+                  "sha512": "70c62e1a265370180e371de4a1e9677ca278cd16ae8b62b795e99fed52ad5d4a9157176cd17e0cc393da1c8ec25dfb9f0271868ac4e5a1aaa2ad810cedbb1c69"
+                },
+                {
+                  "name": "20261113-0528-nura-v26.06-plasma-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-13T05:28:00",
+                  "size": 1013750540,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/plasma-mobile/20261113-0528/20261113-0528-nura-v26.06-plasma-mobile-fairphone-fp5.img.xz",
+                  "sha256": "68563063188593de8fa0b3e72446138c9b2688d1467c15b94c753ee140eff042",
+                  "sha512": "c250dd27e7e9b8313fcc0447ddb0ef7d6d1a67a1f7993d9801932d3f1d3c7533a89eae69c05cd2d074817000be60b568725a85e160e8b7cc810b45abc952cec5"
+                },
+                {
+                  "name": "20261120-0240-nura-v26.06-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-20T02:40:00",
+                  "size": 25380144,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/plasma-mobile/20261120-0240/20261120-0240-nura-v26.06-plasma-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "4055b72fc14002e7635dc6027ccea42d30a9aeecacf1c3a5a538fd09200dec92",
+                  "sha512": "113a4506b29345544e3c077a7ecec8bc0e7ad09b780a57ef99eab03693f5e719e3a517e4d34310d2020eecb47b2af799f783b0b840a1e8d01865783b37e6cfbd"
+                },
+                {
+                  "name": "20261120-0240-nura-v26.06-plasma-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-20T02:40:00",
+                  "size": 1014083492,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/plasma-mobile/20261120-0240/20261120-0240-nura-v26.06-plasma-mobile-fairphone-fp5.img.xz",
+                  "sha256": "ea94d4762571d3307adb7b0cb300d5d150ee2c103b2c37c79bf92108a3a7cd9d",
+                  "sha512": "056ba531db13118cb443c9f85500e8155f6ee1a1f6672ef1664fa208e24ceae5404de4d3170519367d49cf77c54ecb8de7e0424ececafcb08998d13ec576ddd2"
+                }
+              ]
+            },
+            {
+              "name": "gnome-mobile",
+              "pretty_name": "GNOME Mobile",
+              "images": [
+                {
+                  "name": "20261113-0524-nura-v26.06-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-13T05:24:00",
+                  "size": 25380896,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/gnome-mobile/20261113-0524/20261113-0524-nura-v26.06-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "72b0221a5e396cf24c161aa49d72cfd73c6c89bfd70ac0bf0172e168f2a9ce9a",
+                  "sha512": "cae713e4be10c8e68ff1903c3505bb0f396ffde6acfbaddb8d70a4adedc38cdc8fed8e42cb7ba6e16b5ae7b91daab6c18a631731c400e615741694a7e5e0de54"
+                },
+                {
+                  "name": "20261113-0524-nura-v26.06-gnome-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-13T05:24:00",
+                  "size": 756704008,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/gnome-mobile/20261113-0524/20261113-0524-nura-v26.06-gnome-mobile-fairphone-fp5.img.xz",
+                  "sha256": "a0fa9f3f213c5165341ad85b6a3d96fdc225329f86e9724a1c6d2d39dcf357a5",
+                  "sha512": "1fe33145b2f0b9779884aced4cb22718ab5b37ee71bd432e99681948113f6c989a1b4924aac1d41bff6d05b4608770eaacc1c35eb83ca325aeaff1f237d57267"
+                },
+                {
+                  "name": "20261120-0147-nura-v26.06-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-20T01:47:00",
+                  "size": 25380144,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/gnome-mobile/20261120-0147/20261120-0147-nura-v26.06-gnome-mobile-fairphone-fp5-boot.img.xz",
+                  "sha256": "94e2ea8cf9d35228ec8fd6d4350feba19f6548c1274c96d322275355f0a2dfff",
+                  "sha512": "e65970a727fd738d3ff222c529a8659cf918f59fb426e88aca137109d1873b90e5d5a4356b84a90ee165604d9c45a97c4c7af74e48dc9d5e92fc44ac42fa887b"
+                },
+                {
+                  "name": "20261120-0147-nura-v26.06-gnome-mobile-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-20T01:47:00",
+                  "size": 766647920,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/gnome-mobile/20261120-0147/20261120-0147-nura-v26.06-gnome-mobile-fairphone-fp5.img.xz",
+                  "sha256": "82e10d15ab17b49f34466180a4b0f848395dc27ec3532d561fc2d7c53a7e0713",
+                  "sha512": "e51a8814266fbcea4ca2d4e49626bfc9c6fac882db445df04943275c27e19cc5bd02326c7998401cf62b0124af3dc131df485ba533c53eb11c9a4703626df5de"
+                }
+              ]
+            },
+            {
+              "name": "sxmo-de-sway",
+              "pretty_name": "Sxmo (Sway)",
+              "images": [
+                {
+                  "name": "20261115-1806-nura-v26.06-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-15T18:06:00",
+                  "size": 25380896,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/sxmo-de-sway/20261115-1806/20261115-1806-nura-v26.06-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "sha256": "c8aed3dfec32f8e71c364fd70ea4d781a2615eadeb91636f72755855eaff8bba",
+                  "sha512": "0ef4d45092f2b6f46ec4a125d5f11436747a6860f3d1129482a1e3fbacb301b8dcf4fb8257eb9ed8e61a09e6f4f995d3006cd835cc58340c549e739254d60654"
+                },
+                {
+                  "name": "20261115-1806-nura-v26.06-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-15T18:06:00",
+                  "size": 512771340,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/sxmo-de-sway/20261115-1806/20261115-1806-nura-v26.06-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "sha256": "61a3a0c8dc18aa4f914cb622d734dc470d26268fabdc08d8638ef513d51239c5",
+                  "sha512": "b8971e66895a1568acb1ff079b40f199984fcf75eccfec9e5a34ccf6fcdc3306e552eab1869a8245e08b2774c3950315428166e946dcd60f215e89355342e332"
+                },
+                {
+                  "name": "20261120-0152-nura-v26.06-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-20T01:52:00",
+                  "size": 25380144,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/sxmo-de-sway/20261120-0152/20261120-0152-nura-v26.06-sxmo-de-sway-fairphone-fp5-boot.img.xz",
+                  "sha256": "95a29e304b737bd4a44ee6b044995601803cd991271fb79daa4d02bf7a2ef764",
+                  "sha512": "23e2ba957e95b5fa727260e77ef1c377fedcffa027e510bda71d45870beb2b849caca3aecbad9f79a7fc7bc84224df1aa63950d22181a941adcd89c4cd8e6fd6"
+                },
+                {
+                  "name": "20261120-0152-nura-v26.06-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-20T01:52:00",
+                  "size": 512561496,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/sxmo-de-sway/20261120-0152/20261120-0152-nura-v26.06-sxmo-de-sway-fairphone-fp5.img.xz",
+                  "sha256": "da01f06e36c5a17675719a7f15d7580c0f77394b01824b45ee7cfebf9caa511a",
+                  "sha512": "71f0c469a9d685af6fc5cddff22afa19720ea752dadb02157091d882f945643b5718f6e5c7abc482940c7958f06d7cb5f9dc874b88954b677ca586588d1147c6"
+                }
+              ]
+            },
+            {
+              "name": "phosh",
+              "pretty_name": "Phosh",
+              "images": [
+                {
+                  "name": "20261113-0525-nura-v26.06-phosh-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-13T05:25:00",
+                  "size": 25380896,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/phosh/20261113-0525/20261113-0525-nura-v26.06-phosh-fairphone-fp5-boot.img.xz",
+                  "sha256": "1c447c11ea4aa4e715aa330dafd0eca9fed947d7b91bbfa5122cfb80dee5876b",
+                  "sha512": "7450abb2f31087bbc2cabd938cec2df2e8f877fa3d19f4ec84a82f2390aca30824aea9bff49cb76e7c90ffaad5835d3818a52f3e1f72c5fa3e3e426e9d5244b3"
+                },
+                {
+                  "name": "20261113-0525-nura-v26.06-phosh-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-13T05:25:00",
+                  "size": 779894084,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/phosh/20261113-0525/20261113-0525-nura-v26.06-phosh-fairphone-fp5.img.xz",
+                  "sha256": "c3f19c7ca9d90864f802de9439ded7d09c1472abf0d49bd1130f22d0d81fea8a",
+                  "sha512": "4735036293718960f56f659092988bc9eec3b56f18e675ea6bac2e13f512b077bff31f2b55bd2cfe913e9190628e46794a69eeca5a8a482206de60bbe59da266"
+                },
+                {
+                  "name": "20261120-0143-nura-v26.06-phosh-fairphone-fp5-boot.img.xz",
+                  "timestamp": "2026-11-20T01:43:00",
+                  "size": 25380144,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/phosh/20261120-0143/20261120-0143-nura-v26.06-phosh-fairphone-fp5-boot.img.xz",
+                  "sha256": "8633b2fb7b76628f585a18b52a1b26df308e508cd2e44b32d39f7646a03fe330",
+                  "sha512": "25e1d7858d6cd14f449717e7a37674626539e231d78867e8797ceddb7a8b1972e9e785f017119cd2e9bce5e7f5527c5f3df14e0026e73cbfb04a84fff3229756"
+                },
+                {
+                  "name": "20261120-0143-nura-v26.06-phosh-fairphone-fp5.img.xz",
+                  "timestamp": "2026-11-20T01:43:00",
+                  "size": 790164060,
+                  "url": "https://images.nura.eco/bpo/v26.06/fairphone-fp5/phosh/20261120-0143/20261120-0143-nura-v26.06-phosh-fairphone-fp5.img.xz",
+                  "sha256": "eee668580b2b330ebd03a7cadbf5c44890d5a4a58e52c0a54434f7c89eb01e7d",
+                  "sha512": "85ffa9aa264a1169b0dcb768e2041bf175e4b1c203bf9e44284b96bfffafe46748141a85e9839fa04381c9c6545aa4b9b4b182f5cdedffc50728869af67ab596"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

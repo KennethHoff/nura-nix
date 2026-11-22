@@ -15,6 +15,10 @@ pub struct Done {
 }
 
 impl Done {
+    pub fn ok(&self) -> bool {
+        self.status.success()
+    }
+
     pub fn success(self) -> Result<Self> {
         if !self.status.success() {
             return Err(format!(

@@ -9,6 +9,7 @@ const CLEAR_LINE: &str = "\r\x1b[K";
 pub enum Mark {
     Pass,
     Fail,
+    Skip,
 }
 
 impl Mark {
@@ -16,6 +17,7 @@ impl Mark {
         match self {
             Mark::Pass => "[ ok ]",
             Mark::Fail => "[FAIL]",
+            Mark::Skip => "[skip]",
         }
     }
 }
@@ -53,6 +55,14 @@ pub enum Title<'a> {
         step_ms: u64,
         run_ms: u64,
     },
+    /// The run waits for the owner: an action, a typed answer or the phone.
+    Waiting {
+        n: u32,
+        total: u32,
+        what: &'a str,
+        step_ms: u64,
+        run_ms: u64,
+    },
     Done {
         run_ms: u64,
     },
@@ -80,6 +90,17 @@ pub fn title(state: &Title, tick: usize) -> String {
                 clock(run_ms)
             )
         }
+        Title::Waiting {
+            n,
+            total,
+            what,
+            step_ms,
+            run_ms,
+        } => format!(
+            "⏸ nura {n}/{total} {what} · {} ({})",
+            clock(step_ms),
+            clock(run_ms)
+        ),
         Title::Done { run_ms } => format!("✓ nura done · {}", clock(run_ms)),
         Title::Stopped { n, total, run_ms } => {
             format!("✗ nura stopped at {n}/{total} · {}", clock(run_ms))
@@ -90,6 +111,22 @@ pub fn title(state: &Title, tick: usize) -> String {
 /// The escape sequence that sets the terminal title (OSC 2).
 pub fn set_title(text: &str) -> String {
     format!("\x1b]2;{text}\x07")
+}
+
+/// A limit named before a wait: `45 s`, `15 min`, `1 min 30 s`.
+/// ` (up to …)` after a wait's name when it has a limit, nothing when it waits until stopped.
+pub fn up_to(limit_of: Option<std::time::Duration>) -> String {
+    limit_of.map_or(String::new(), |d| {
+        format!(" (up to {})", limit(d.as_secs()))
+    })
+}
+
+pub fn limit(secs: u64) -> String {
+    match (secs / 60, secs % 60) {
+        (0, s) => format!("{s} s"),
+        (m, 0) => format!("{m} min"),
+        (m, s) => format!("{m} min {s} s"),
+    }
 }
 
 pub fn human(bytes: u64) -> String {
@@ -127,6 +164,11 @@ pub fn result(mark: Mark, label: &str, detail: &str, ms: u64) -> String {
         out.push_str(&format!("\n         {line}"));
     }
     out
+}
+
+/// A result that never ran, so it has no duration.
+pub fn skipped(label: &str, why: &str) -> String {
+    format!("  {} {label}: {why}", Mark::Skip.tag())
 }
 
 pub fn run_end(ms: u64, outcome: &str) -> String {
@@ -204,6 +246,17 @@ mod tests {
             title(&working, 1),
             "⠙ nura 2/14 Check the phone over adb · 0:12 (0:41)"
         );
+        let you = Title::Waiting {
+            n: 7,
+            total: 14,
+            what: "Volume Down + Power",
+            step_ms: 35_000,
+            run_ms: 880_000,
+        };
+        assert_eq!(
+            title(&you, 9),
+            "⏸ nura 7/14 Volume Down + Power · 0:35 (14:40)"
+        );
         assert_eq!(
             title(&Title::Done { run_ms: 2_480_000 }, 0),
             "✓ nura done · 41:20"
@@ -222,6 +275,20 @@ mod tests {
         assert_eq!(clock(3_725_000), "1:02:05");
         assert_eq!(set_title("x"), "\x1b]2;x\x07");
         assert_eq!(title(&working, 11), title(&working, 1));
+    }
+
+    #[test]
+    fn limits_read_as_seconds_or_minutes() {
+        assert_eq!(limit(0), "0 s");
+        assert_eq!(limit(45), "45 s");
+        assert_eq!(limit(60), "1 min");
+        assert_eq!(limit(900), "15 min");
+        assert_eq!(limit(90), "1 min 30 s");
+        assert_eq!(up_to(None), "");
+        assert_eq!(
+            up_to(Some(std::time::Duration::from_secs(600))),
+            " (up to 10 min)"
+        );
     }
 
     #[test]
@@ -266,6 +333,14 @@ mod tests {
         assert_eq!(
             result(Mark::Pass, "step", "", 0),
             format!("  {:<64} 0.0 s", "[ ok ] step")
+        );
+    }
+
+    #[test]
+    fn a_skip_has_no_duration() {
+        assert_eq!(
+            skipped("getvar", "no phone"),
+            "  [skip] getvar: no phone".to_string()
         );
     }
 
@@ -324,5 +399,6 @@ mod tests {
     fn marks_keep_their_tags() {
         assert_eq!(Mark::Pass.tag(), "[ ok ]");
         assert_eq!(Mark::Fail.tag(), "[FAIL]");
+        assert_eq!(Mark::Skip.tag(), "[skip]");
     }
 }

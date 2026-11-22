@@ -1,8 +1,11 @@
+mod adb;
 mod cmd;
 mod config;
 mod fail;
+mod fastboot;
 mod host;
 mod log;
+mod phone;
 mod preflight;
 mod render;
 mod signals;
@@ -10,14 +13,17 @@ mod steps;
 mod ui;
 
 use fail::{Fail, Result};
-use preflight::Report;
+use preflight::{Facts, Report};
+use std::path::Path;
 use std::process::ExitCode;
 
 const USAGE: &str = "Usage: nura-install
 
-Takes no arguments: it checks that this computer has what a Nura install needs. Nothing is
-written to a phone.
+Takes no arguments: it reads the phone over adb and fastboot and checks that it can take Nura.
+Nothing is written to the phone.
 
+  Android over adb                check the phone and its bootloader, in two sections (Preflight,
+                                  Finish)
   -h, --help                      this text
 
 Exit codes:
@@ -36,12 +42,12 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> std::result::Result<boo
     }
 }
 
-/// Ctrl-C, hang-up or terminate: ends the run at once.
+/// Ctrl-C, hang-up or terminate: says that nothing was written to the phone, then stops.
 pub fn interrupted() -> ! {
     ui::stop_live();
     ui::kill_child();
     ui::end_step();
-    ui::say("\ninterrupted");
+    ui::say("\ninterrupted: Nothing was written to the phone.");
     log::line("outcome: interrupted");
     finish_output("interrupted");
     std::process::exit(i32::from(signals::exit_code()))
@@ -96,12 +102,72 @@ fn run() -> Result<()> {
     host::ensure_cache(&cache, euid)?;
     log::open(&cache, &host::timestamp()?, "run")?;
     let _lock = host::lock(&cache)?;
+    match adb::devices() {
+        Ok(devices) => read_phone(&cache, devices.is_empty()),
+        Err(Fail::Stop(msg)) => unreadable_surroundings(&cache, msg),
+    }
+}
+
+/// The computer could not tell whether a phone is connected: say so after checking what the run needs, in
+/// case that is the cause.
+fn unreadable_surroundings(cache: &Path, msg: String) -> Result<()> {
     ui::plan(1);
     ui::section("Preflight");
     ui::step(&steps::CHECK_COMPUTER);
     let mut report = Report::new();
-    preflight::computer(&mut report, &cache);
-    report.conclude("nura-install")
+    preflight::computer(&mut report, cache);
+    report.conclude("nura-install")?;
+    Err(Fail::Stop(msg))
+}
+
+fn the_run_lost_track<T>() -> Result<T> {
+    Err("every check passed, but a value the run needs is missing; this is a bug in nura-install, nothing was written".into())
+}
+
+fn read_phone(cache: &Path, wait: bool) -> Result<()> {
+    ui::plan(6 + u32::from(wait));
+    ui::section("Preflight");
+    ui::step(&steps::CHECK_COMPUTER);
+    let mut report = Report::new();
+    preflight::computer(&mut report, cache);
+    let mut found_phone = None;
+    if wait {
+        ui::step(&steps::CONNECT);
+        found_phone = preflight::find_phone(&mut report);
+    }
+    ui::step(&steps::CHECK_ADB);
+    if !wait {
+        found_phone = preflight::find_phone(&mut report);
+    }
+    let facts = preflight::adb_side(&mut report, found_phone);
+    report.conclude("nura-install")?;
+    let Facts {
+        serial: Some(serial),
+        slot: Some(slot),
+        ..
+    } = &facts
+    else {
+        return the_run_lost_track();
+    };
+    let (serial, slot) = (serial.clone(), *slot);
+
+    ui::step(&steps::TO_FASTBOOT);
+    fastboot::wait_for_phone()?;
+    ui::step(&steps::CHECK_BOOTLOADER);
+    let mut bootloader = Report::new();
+    preflight::fastboot_side(&mut bootloader, &serial, slot);
+    bootloader.conclude("nura-install")?;
+
+    ui::step(&steps::RESTART_TO_ANDROID);
+    let mut report = Report::new();
+    let found_phone = preflight::find_phone(&mut report);
+    let again = preflight::adb_side(&mut report, found_phone);
+    preflight::same_phone(&mut report, &facts, &again);
+    report.conclude("nura-install")?;
+    ui::section("Finish");
+    ui::step(&steps::SUMMARY);
+    ui::say("Nothing was written to the phone.");
+    Ok(())
 }
 
 #[cfg(test)]

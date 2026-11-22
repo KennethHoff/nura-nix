@@ -253,6 +253,11 @@ pub fn run<T>(job: Job, work: impl FnOnce() -> Result<(T, String)>) -> Result<T>
     }
 }
 
+/// A check that did not run.
+pub fn skip(label: &str, why: &str) {
+    out(&mut lock(), &render::skipped(label, why));
+}
+
 fn end_phase(c: &mut Console) {
     if let Some((name, started)) = c.phase.take() {
         out(c, &render::finished(&format!("{name} done"), ms(started)));
@@ -312,16 +317,29 @@ fn update_title(c: &mut Console) {
     };
     let (n, total) = (c.step, c.total);
     let (step_ms, run_ms) = (ms(*step_started), ms(run_started));
-    let text = render::title(
-        &render::Title::Working {
-            n,
-            total,
-            label: step.title,
-            step_ms,
-            run_ms,
-        },
-        c.title_tick,
-    );
+    let text = if step.actor == steps::Actor::You {
+        render::title(
+            &render::Title::Waiting {
+                n,
+                total,
+                what: step.short,
+                step_ms,
+                run_ms,
+            },
+            c.title_tick,
+        )
+    } else {
+        render::title(
+            &render::Title::Working {
+                n,
+                total,
+                label: step.title,
+                step_ms,
+                run_ms,
+            },
+            c.title_tick,
+        )
+    };
     put(&render::set_title(&text));
     c.title_tick += 1;
     c.title_at = Some(Instant::now());

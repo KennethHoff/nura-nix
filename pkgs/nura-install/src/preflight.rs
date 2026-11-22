@@ -1,14 +1,26 @@
-//! The Preflight section: every read-only check of the run, in order, each with a mark. It does not
-//! stop at the first failure: it runs every check it can, reports all the failures together and only
-//! then stops. It changes nothing.
+//! The Preflight section: every read-only check of the run, in order, each with a mark. Unlike the
+//! sections that write, it does not stop at the first failure: it runs every check it can, reports all
+//! the failures together and only then stops. It writes nothing to the phone and no record.
+use crate::adb::{self, Device, MIN_BATTERY};
+use crate::config;
 use crate::fail::{Fail, Result};
+use crate::fastboot;
 use crate::host;
-use crate::render::{plural, Mark};
+use crate::phone::{Serial, Slot};
+use crate::render::{limit, plural, Mark};
 use crate::ui::{self, Job};
 use std::path::Path;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 const FIX_TOOLS: &str = "[ ] Install or fix the program named above  [ ] Run again.";
 const FIX_DISK: &str = "[ ] Free space in the cache directory, or move it  [ ] Run again.";
+const FIX_DEVICE: &str = "[ ] Boot into Android  [ ] USB debugging on  [ ] Cable straight to this computer  [ ] Accept the RSA prompt  [ ] Run again.";
+const FIX_PROP: &str = "[ ] Wait until Android is booted and unlocked  [ ] Run again.";
+const FIX_ACCOUNTS: &str =
+    "[ ] Settings > Passwords & accounts: sign out of every account  [ ] Run again.";
+const FIX_BATTERY: &str = "[ ] Charge the phone  [ ] Run again.";
+const FIX_VAR: &str = "[ ] Flash nothing  [ ] Report this answer.";
 
 struct Row {
     mark: Mark,
@@ -80,6 +92,11 @@ impl Report {
         }
     }
 
+    fn skip(&mut self, label: &str, why: &str) {
+        ui::skip(label, why);
+        self.record(Mark::Skip, label, why, "");
+    }
+
     fn count(&self, mark: Mark) -> usize {
         self.rows.iter().filter(|r| r.mark == mark).count()
     }
@@ -87,21 +104,25 @@ impl Report {
     /// Ends the Preflight: silent success, or every failure with what to do, and a stop.
     pub fn conclude(&self, run_again: &str) -> Result<()> {
         let failed = self.count(Mark::Fail);
-        if failed == 0 {
+        let skipped = self.count(Mark::Skip);
+        if failed + skipped == 0 {
             ui::say(&format!(
                 "  Preflight passed: {}",
                 plural(self.rows.len(), "check")
             ));
             return Ok(());
         }
-        ui::say(&format!("\nNot ready: {} failed.", plural(failed, "check")));
+        ui::say(&format!(
+            "\nNot ready: {} failed, {skipped} skipped.",
+            plural(failed, "check")
+        ));
         ui::say("What each one means and what to do:");
         for row in self.rows.iter().filter(|row| row.mark == Mark::Fail) {
             let first = row.detail.lines().next().unwrap_or("");
             ui::say(&format!("  - {}: {first}\n      {}", row.label, row.fix));
         }
         Err(Fail::Stop(format!(
-            "Preflight not ready: {} failed; nothing was changed. Next: fix what is listed above and run `{run_again}` again",
+            "Preflight not ready: {} failed, {skipped} skipped; nothing was written to the phone and no record was made. Next: fix what is listed above and run `{run_again}` again",
             plural(failed, "check")
         )))
     }
@@ -111,4 +132,134 @@ impl Report {
 pub fn computer(r: &mut Report, cache: &Path) {
     r.check_named("tools", host::tools_naming(), FIX_TOOLS, host::check_tools);
     r.check("disk space", FIX_DISK, || host::check_disk(cache));
+}
+
+#[derive(Default)]
+pub struct Facts {
+    pub serial: Option<Serial>,
+    pub slot: Option<Slot>,
+}
+
+fn same(value: String, want: &str, what: &str) -> Result<(String, String)> {
+    if value == want {
+        Ok((value.clone(), value))
+    } else {
+        Err(format!("the phone reports {what} {value}, adb listed {want}").into())
+    }
+}
+
+fn wait_naming() -> Result<String> {
+    Ok(format!(
+        "waiting for the phone over adb{}",
+        crate::render::up_to(config::wait_limit()?)
+    ))
+}
+
+fn wait_for_device() -> Result<(Serial, String)> {
+    let started = Instant::now();
+    let wait = config::wait_limit()?.unwrap_or(Duration::MAX);
+    loop {
+        let list = adb::devices()?;
+        match list.as_slice() {
+            [Device { serial, state }] if state == "device" => {
+                let serial = Serial::new(serial)?;
+                return Ok((serial.clone(), serial.to_string()));
+            }
+            [] | [_] if started.elapsed() < wait => sleep(Duration::from_secs(2)),
+            [] => {
+                return Err(format!(
+                    "no phone is visible over adb after waiting {}. {}",
+                    limit(wait.as_secs()),
+                    FIX_DEVICE
+                )
+                .into())
+            }
+            [Device { state, .. }] => {
+                return Err(match state.as_str() {
+                    "unauthorized" => "adb lists the phone as unauthorized: accept the RSA prompt on it".to_string(),
+                    "offline" => "adb lists the phone as offline: unplug it, plug it in again and accept the RSA prompt".to_string(),
+                    other => format!("adb lists the phone in state {other:?}, not `device`"),
+                }
+                .into())
+            }
+            many => {
+                return Err(format!("{} adb devices are connected; connect only the phone", many.len()).into())
+            }
+        }
+    }
+}
+
+/// The one phone over adb, waiting for it up to the limit.
+pub fn find_phone(r: &mut Report) -> Option<Serial> {
+    let waiting = wait_naming().unwrap_or_else(|e| e.to_string());
+    r.check_named("exactly one phone", waiting, FIX_DEVICE, wait_for_device)
+}
+
+/// The phone on Android, read over adb.
+pub fn adb_side(r: &mut Report, found: Option<Serial>) -> Facts {
+    let mut facts = Facts::default();
+    let Some(serial) = found else {
+        r.skip("every other adb check", "it needs the phone over adb");
+        return facts;
+    };
+    ui::say(&format!("  phone {serial}"));
+    let get = |name: &str| adb::getprop(&serial, name);
+    r.check("ro.serialno", FIX_PROP, || {
+        get("ro.serialno").and_then(|v| same(v, serial.as_str(), "serial"))
+    });
+    facts.slot = r.check("ro.boot.slot_suffix", FIX_PROP, || {
+        adb::slot_of(&serial).map(|s| (s, format!("slot {}", s.as_str())))
+    });
+    r.check("accounts signed in", FIX_ACCOUNTS, || {
+        let n = adb::shell(&serial, "dumpsys account").and_then(|t| adb::parse_accounts(&t))?;
+        if n > 0 {
+            return Err(
+                "accounts are signed in; remove them all in Settings, then run again".into(),
+            );
+        }
+        Ok(((), "none signed in".to_string()))
+    });
+    r.check("battery", FIX_BATTERY, || {
+        let level = adb::shell(&serial, "dumpsys battery").and_then(|t| adb::parse_battery(&t))?;
+        if level < MIN_BATTERY {
+            return Err(format!(
+                "the battery is at {level}%; charge it to at least {MIN_BATTERY}% and run again"
+            )
+            .into());
+        }
+        Ok(((), format!("{level}%")))
+    });
+    facts.serial = Some(serial);
+    facts
+}
+
+/// The phone that came back over adb after the bootloader check is the one that was checked.
+pub fn same_phone(r: &mut Report, before: &Facts, after: &Facts) {
+    r.check("the same phone as before", FIX_PROP, || {
+        let same = before.serial == after.serial
+            && before.slot == after.slot;
+        if same {
+            Ok(((), "same serial and slot".to_string()))
+        } else {
+            Err("the serial or slot differs from before the bootloader check; run again from the start".into())
+        }
+    });
+}
+
+/// The bootloader's answers as checks of the report: `getvar all` once, then every variable the run
+/// needs; all failures are reported together.
+pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) {
+    let Some(vars) = r.check("getvar all", FIX_VAR, || {
+        let vars = fastboot::read_all(serial)?;
+        let shown = format!("{} variables", vars.len());
+        Ok((vars, shown))
+    }) else {
+        return;
+    };
+    for c in fastboot::checks(serial, slot, &vars) {
+        r.check(&c.label, FIX_VAR, || {
+            let shown = (c.run)()?;
+            Ok(((), shown))
+        });
+    }
 }

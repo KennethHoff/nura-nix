@@ -2,6 +2,7 @@
 use crate::cmd::{capture, stdout_of};
 use crate::config;
 use crate::fail::Result;
+use crate::log;
 use crate::render::human;
 use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
@@ -74,7 +75,12 @@ struct Tool {
 pub fn check_tools() -> Result<((), String)> {
     let tool = |program: OsString, arg| Tool { program, arg };
     let plain = |name: &str, arg| tool(name.into(), arg);
-    let tools = [plain("date", "--version"), plain("df", "--version")];
+    let tools = [
+        tool(config::adb_bin(), "version"),
+        tool(config::fastboot_bin(), "--version"),
+        plain("date", "--version"),
+        plain("df", "--version"),
+    ];
     let count = tools.len();
     for tool in tools {
         let name = Path::new(&tool.program).display().to_string();
@@ -118,4 +124,9 @@ fn free_bytes(dir: &Path) -> Result<u64> {
         .filter_map(|l| l.trim().parse().ok())
         .next_back()
         .ok_or_else(|| format!("df printed no free space for {}", dir.display()).into())
+}
+
+/// Records a passed check and its value in the run transcript.
+pub fn checked(what: &str, value: &str) {
+    log::line(&format!("check {what}: {value}"));
 }
