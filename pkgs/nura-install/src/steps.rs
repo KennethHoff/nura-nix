@@ -326,7 +326,7 @@ pub const APPROVE_REBOOT: Step = you(
     "choose Reboot",
     None,
     &[],
-    Some("in fastboot, all writes done; after `stop`, hold Power to restart it"),
+    Some("in fastboot, all writes done; after Stop, hold Power to restart it"),
 );
 pub const REBOOT: Step = tool(
     "Restart the phone",

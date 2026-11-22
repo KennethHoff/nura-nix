@@ -59,7 +59,7 @@ enum After {
 
 pub struct Group {
     title: &'static str,
-    phrase: &'static str,
+    word: &'static str,
     writes: Vec<Vec<OsString>>,
     images: Vec<Verified>,
     erases_nura: bool,
@@ -122,7 +122,7 @@ impl Group {
     pub fn install(nura: &NuraImages, origin: Origin) -> Result<Self> {
         Group {
             title: "Install Nura",
-            phrase: "install nura",
+            word: "install nura",
             writes: vec![
                 erase("dtbo"),
                 erase("vendor_boot"),
@@ -147,7 +147,7 @@ impl Group {
     pub fn reinstall(nura: &NuraImages) -> Result<Self> {
         Group {
             title: "Reinstall Nura",
-            phrase: "reinstall nura",
+            word: "reinstall nura",
             erases_nura: true,
             recheck: Recheck::Full,
             on_phone: "",
@@ -162,7 +162,7 @@ impl Group {
     pub fn unlock(origin: Origin) -> Result<Self> {
         Group {
             title: "Unlock the bootloader",
-            phrase: "unlock bootloader",
+            word: "unlock bootloader",
             writes: vec![words(&["flashing".as_ref(), "unlock".as_ref()])],
             images: Vec::new(),
             erases_nura: false,
@@ -183,7 +183,7 @@ impl Group {
     pub fn unlock_critical() -> Result<Self> {
         Group {
             title: "Unlock the critical partitions",
-            phrase: "unlock critical",
+            word: "unlock critical",
             writes: vec![words(&["flashing".as_ref(), "unlock_critical".as_ref()])],
             images: Vec::new(),
             erases_nura: false,
@@ -201,7 +201,7 @@ impl Group {
     pub fn reboot() -> Result<Self> {
         Group {
             title: "The reboot",
-            phrase: "reboot",
+            word: "reboot",
             writes: vec![words(&["reboot".as_ref()])],
             images: Vec::new(),
             erases_nura: false,
@@ -262,8 +262,8 @@ pub fn images_fit(serial: &Serial, slot: Slot, group: &Group) -> Result<()> {
     Ok(())
 }
 
-fn approval_label(phrase: &str) -> &'static str {
-    match phrase {
+fn approval_label(word: &str) -> &'static str {
+    match word {
         "install nura" => "Install Nura (erases Android and all its data)",
         "reinstall nura" => "Reinstall Nura (erases Nura and all its data)",
         "unlock bootloader" => "Unlock the bootloader (erases the phone)",
@@ -284,7 +284,7 @@ fn gate(phone: &Phone, group: &Group) -> Result<bool> {
     if group.erases_nura {
         ui::say("This erases everything on Nura; there is no backup of it.");
     }
-    prompt::approve(group.phrase, approval_label(group.phrase))
+    prompt::approve(group.word, approval_label(group.word))
 }
 
 fn run_writes(phone: &Phone, group: &Group) -> Result<(Vec<String>, Option<String>)> {
@@ -344,7 +344,7 @@ pub fn execute(phone: &Phone, group: Group, applying: &'static Step) -> Result<(
     if !gate(phone, &group)? {
         return Err(format!(
             "stopped at the `{}` gate. Nothing from this group was written. {} Run `nura-install` again to continue.",
-            group.phrase,
+            group.word,
             group.unchanged.replace("{serial}", phone.serial.as_str())
         )
         .into());
@@ -387,7 +387,7 @@ pub fn execute(phone: &Phone, group: Group, applying: &'static Step) -> Result<(
         }
         After::Keep => {}
     }
-    log::line(&format!("group `{}` finished", group.phrase));
+    log::line(&format!("group `{}` finished", group.word));
     if block.take_pending()? {
         return Err("interrupted while writing; the group finished and the record is current. Run `nura-install` again from fastboot to continue.".into());
     }
@@ -405,7 +405,7 @@ mod tests {
     fn bad(a: &[&str]) -> bool {
         Group {
             title: "t",
-            phrase: "p",
+            word: "p",
             writes: vec![args(a)],
             images: Vec::new(),
             erases_nura: false,

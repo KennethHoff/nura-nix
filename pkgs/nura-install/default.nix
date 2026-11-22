@@ -10,7 +10,7 @@
 #
 # ## Index, cache and test hooks
 #
-# Nura's builds come from its image index, fetched on every run and checked file by file against
+# Nura's builds come from its image index, fetched afresh whenever a run is about to install Nura and checked file by file against
 # the hashes in it. `cacheDir` is compiled in
 # as `NURA_INSTALL_CACHE` when set (otherwise the cache is $XDG_DATA_HOME/nura-install), so an
 # exported NURA_INSTALL_* variable changes nothing in the shipped binary.

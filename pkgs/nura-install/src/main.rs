@@ -93,7 +93,7 @@ pub fn interrupted() -> ! {
         ui::say(&note);
     }
     log::line("outcome: interrupted");
-    finish_output("interrupted");
+    ui::finish_run("interrupted");
     std::process::exit(i32::from(signals::exit_code()))
 }
 
@@ -104,10 +104,6 @@ fn backup_note(recorded: &str) -> String {
     } else {
         format!("The backup of Android stays under {recorded}.")
     }
-}
-
-fn finish_output(outcome: &str) {
-    ui::finish_run(outcome);
 }
 
 fn main() -> ExitCode {
@@ -158,7 +154,7 @@ fn main() -> ExitCode {
             (fail.exit_code(), label)
         }
     };
-    finish_output(label);
+    ui::finish_run(label);
     ExitCode::from(code)
 }
 
@@ -564,7 +560,6 @@ mod tests {
         assert_eq!(args(&[]), Ok(false));
         assert_eq!(args(&["--help"]), Ok(true));
         assert_eq!(args(&["-h"]), Ok(true));
-        assert!(args(&["--os", "nura"]).is_err());
         assert!(args(&["nura"]).is_err());
         assert!(args(&["--help", "--other"]).is_err());
     }

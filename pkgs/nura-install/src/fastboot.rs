@@ -268,7 +268,7 @@ fn expect_slot(src: &Source, serial: &Serial, recorded: Slot) -> Result<String> 
 
 fn slot_changed(got: &str, recorded: Slot) -> crate::fail::Fail {
     format!(
-        "fastboot says the current slot is `{got}`, but this phone was recorded on `{}`. The bootloader \
+        "fastboot says the current slot is `{got}`, but this phone is on `{}`, as adb or its record says. The bootloader \
          switches slots on its own after repeated failed boots. Nothing was written. Do NOT switch slots \
          (no `fastboot set_active`, no `qbootctl`). See the Consequences section of \
          docs/adr/0001-guarded-fairphone-6-flashing.md before doing anything else.",

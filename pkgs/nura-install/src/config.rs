@@ -131,8 +131,8 @@ pub fn needed_gib() -> Result<u64> {
     Ok(hook_number("NURA_INSTALL_NEEDED_GIB")?.unwrap_or(12))
 }
 
-/// Waits for the owner's part (the phone showing up over adb or in fastboot) have no limit:
-/// Ctrl-C ends them. Only the tests set one.
+/// The owner's part (the phone showing up over adb or in fastboot) has no wait limit:
+/// Ctrl-C ends it. Only the tests set one.
 pub fn wait_limit() -> Result<Option<Duration>> {
     Ok(hook_number("NURA_INSTALL_WAIT_SECONDS")?.map(Duration::from_secs))
 }

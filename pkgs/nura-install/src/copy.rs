@@ -36,7 +36,7 @@ const PASSWORD: &str = "147147";
 const USER: &str = "user";
 pub const PARTITIONS: [&str; 5] = ["persist", "modemst1", "modemst2", "fsg", "fsc"];
 const ASKPASS_VAR: &str = "NURA_INSTALL_ASKPASS";
-const TRUST_PHRASE: &str = "trust this phone";
+const TRUST_WORD: &str = "trust this phone";
 const LABELS_DIR: &str = "/dev/disk/by-partlabel";
 const SUDO: &str = "sudo -S -p '' ";
 
@@ -257,7 +257,7 @@ pub fn forget_host_key(cache: &Path, serial: &Serial) -> Result<()> {
     crate::host::remove(&known_hosts(cache, serial))
 }
 
-/// The phone's host key is trusted on first contact only, by a typed phrase, and kept per phone.
+/// The phone's host key is trusted on first contact only, by an approval, and kept per phone.
 fn trust(known: &Path, host: &str, port: &str) -> Result<()> {
     if fs::metadata(known).is_ok_and(|m| m.len() > 0) {
         return Ok(());
@@ -293,7 +293,7 @@ fn trust(known: &Path, host: &str, port: &str) -> Result<()> {
     ));
     ui::say("  Compare it with the one Nura shows (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the phone) if you want to be sure.");
     if !approve(
-        TRUST_PHRASE,
+        TRUST_WORD,
         &format!(
             "Trust this key for this phone ({})",
             fingerprint_of(&fingerprint)

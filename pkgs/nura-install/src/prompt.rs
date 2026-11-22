@@ -1,4 +1,4 @@
-//! Typed input. Gates and confirmations read only a terminal, after dropping anything typed ahead.
+//! Menus and approvals. They read only a terminal, after dropping anything typed ahead.
 use crate::config;
 use crate::fail::Result;
 use crate::log;

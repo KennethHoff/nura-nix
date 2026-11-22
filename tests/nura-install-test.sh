@@ -152,7 +152,7 @@ EOS
 #   FAKE_FB_EXTRA=1  a second phone, XYZ789;  FAKE_FB_STATE=<state>  the state column;  FAKE_FB_NOPERM=1  a "no permissions" entry
 #   FAKE_DEVICES_FAIL=1  `fastboot devices` exits 1;  FAKE_SWAP_FROM=n  the serial changes from the nth `devices` call
 #   FAKE_PRODUCT, FAKE_USERSPACE, FAKE_UNLOCKED, FAKE_SLOT, FAKE_SLOTS, FAKE_FB_BATTERY, FAKE_SNAPSHOT,
-#   (the getvar answers are the real capture in nura-install-fixtures/, changed by these knobs)
+#   (the getvar answers are a real capture, changed by these knobs)
 #   FAKE_PSIZE=<name>=<hex>  that partition-size answer (names: boot_a, userdata, ...);  FAKE_PSIZE_MISSING=<name>  answered "Variable Not found"
 #   FAKE_PSIZE_PRESENT=<name>  answered with a size (userdata_a must be absent);  FAKE_PSIZE_GARBAGE=<name>  answered with another FAILED
 #   FAKE_PSIZE_FLIP=n  partition-size:boot_a is not found from its nth check on
@@ -388,10 +388,10 @@ REAL_CURL=$(command -v curl)
 export REAL_CURL
 
 # Typed input shared by the cases.
-done_phrase='Confirm'
+confirm_word='Confirm'
 # Menus are answered by their word when the input is piped (the test build only); the pty cases press keys.
 choice='phosh\n'
-confirmations="${choice}$done_phrase\nbackup\n"
+confirmations="${choice}$confirm_word\nbackup\n"
 trust='trust this phone'
 copy_in="copy\n$trust\n"
 fresh_in="${confirmations}install nura\nreboot\n"
@@ -553,7 +553,7 @@ nura_raw=$cache/downloads
 rc=0; "$shipped" --help > "$root/out" 2>&1 || rc=$?
 [ "$rc" = 0 ] || fail "shipped --help exited $rc"
 grep -q 'Exit codes' "$root/out" || fail "--help lacks the exit codes"
-for bad in "--os nura" "--os" "nura" "--rollback" "--help --os"; do
+for bad in "nura" "-x" "--help nura"; do
   rc=0; "$shipped" $bad > "$root/out" 2>&1 || rc=$?
   [ "$rc" = 2 ] || fail "shipped '$bad' exited $rc"
 done
@@ -759,7 +759,7 @@ refused "a recorded phone on adb" 'from fastboot' 3
 fresh_cache
 FAKE_FB_AFTER=9 FAKE_ADB=none run "$choice"
 refused "no phone anywhere" 'no phone is visible over adb'
-for args in "--os nura" "--os" "nura" "-x"; do
+for args in "nura" "-x"; do
   run '' $args
   [ "$rc" = 2 ] || fail "nura-install $args exited $rc, not 2"
   grep -q 'unexpected argument' "$root/out" || fail "nura-install $args gave no usage error"
@@ -802,7 +802,7 @@ FAKE_ADB=unauthorized stop_early "unauthorized phone" 'RSA'
 FAKE_ADB=offline stop_early "offline phone" 'adb lists the phone as offline'
 FAKE_ADB_EXTRA=1 stop_early "two phones over adb" '2 adb devices are connected'
 
-## Typed confirmations: each is required, in order, before any backup or write
+## Confirmations: each is required, in order, before any backup or write
 
 confirmation_stop() { # name, input
   fresh_cache
@@ -820,7 +820,7 @@ confirmation_stop "stop at the interface choice" 'stop\n'
 confirmation_stop "an interface that is not offered" 'kde\nPhosh\n'
 [ "$(grep -c 'That is not one of phosh, plasma, gnome, sxmo' "$root/out")" = 2 ] || fail "a wrong interface was not asked again"
 
-## Empty backups need a typed acknowledgement
+## Empty backups need an acknowledgement
 
 fresh_cache
 FAKE_CONTENT_EMPTY=content://sms FAKE_FB_AFTER=1 run "$fresh_in"
@@ -952,7 +952,6 @@ FAKE_PSIZE_MISSING=vendor_boot_b fb_fail "a slotted partition without a size" 'n
 FAKE_PSIZE=dtbo_a=0x0 fb_fail "a zero size" 'partition-size:dtbo_a: 0x0`, not a size above zero'
 FAKE_PSIZE=boot_b=big fb_fail "a size that is not hex" 'partition-size:boot_b: big`'
 FAKE_PSIZE_MISSING=userdata fb_fail "userdata without a size" 'no value for `getvar partition-size:userdata`'
-FAKE_PSIZE_PRESENT=userdata_a fb_fail "userdata has a slot" 'partition-size:userdata_a: 0x1000`, but userdata has no slot'
 FAKE_PSIZE_PRESENT=userdata_a fb_fail "userdata has a slot" 'partition-size:userdata_a: 0x1000`, but userdata has no slot'
 FAKE_PSIZE_GARBAGE=userdata_a fb_fail "garbage where absence is expected" 'neither a size nor "not found"'
 FAKE_PSIZE_FLIP=2 fb_fail "a size that disappears after the gate" 'no value for `getvar partition-size:boot_a`'
@@ -1117,11 +1116,11 @@ phone_locked
 
 set_record nura-in-progress
 run "${choice}"'install\nInstall Nura\nINSTALL NURA\nuninstall nura\ninstall nura\nreboot\n'
-[ "$rc" = 0 ] || fail "typos then the phrase exited $rc"
+[ "$rc" = 0 ] || fail "typos then the word exited $rc"
 [ "$(grep -c 'That is not one of install nura' "$root/out")" = 4 ] || fail "typos not all re-asked"
 set_record nura-installed
 run "${choice}install nura\n"
-refused "install phrase at a reinstall gate" 'stopped at the `reinstall nura` gate'
+refused "install word at a reinstall gate" 'stopped at the `reinstall nura` gate'
 grep -q 'erases everything on Nura' "$root/out" || fail "the reinstall gate does not say it erases Nura"
 run "${choice}stop\n"
 refused "stop at the reinstall gate" 'stopped at the `reinstall nura` gate'
@@ -1153,7 +1152,6 @@ NURA_INSTALL_ALLOW_PIPED_INPUT= FAKE_FB_AFTER=0 run ''
 
 ## Failed write, interrupted group, a phone that vanishes
 
-set_record nura-installed
 set_record nura-installed
 FAKE_FAIL0=dtbo run "$reinstall_in"
 [ "$rc" = 1 ] || fail "a write that printed FAILED and exited 0 let the run go on (exit $rc)"
@@ -1323,7 +1321,6 @@ copy_only() { # stdin
 no_ssh() { # name: ssh was never run
   [ ! -s "$SSH_LOG" ] || fail "$1: ssh was run: $(cat "$SSH_LOG")"
 }
-sshd_was_stopped() { [ -e "$SSHD_STOPPED" ] || fail "$1: sshd was not stopped"; }
 no_copy_recorded() { [ -z "$(jq -r '.copy_path // empty' "$STATE_FILE")" ] || fail "$1: a copy was recorded"; }
 
 rm -f "$known"
@@ -1382,7 +1379,7 @@ grep -q 'host key was not trusted' "$root/out" || fail "the untrusted key was no
 [ ! -e "$known" ] || fail "an untrusted key was pinned"
 no_ssh "an untrusted host key"; no_copy_recorded "an untrusted host key"
 copy_only 'copy\ntrust\nTrust this phone\n'"$trust"'\n'
-[ "$rc" = 0 ] || fail "typos at the trust phrase exited $rc"
+[ "$rc" = 0 ] || fail "typos at the trust word exited $rc"
 [ "$(grep -c 'That is not one of trust this phone' "$root/out")" = 2 ] || fail "the trust typos were not asked again"
 # A host key that changed on a later run is refused by ssh; nothing is trusted again.
 cp "$known" "$root/known.before"

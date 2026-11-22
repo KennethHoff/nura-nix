@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const MIN_BATTERY: u32 = 50;
-const CONFIRM_PHRASE: &str = "Confirm";
+const CONFIRM_WORD: &str = "Confirm";
 const NOT_BACKED_UP: &str = "\
 NOT in the backup, lost for good:
   - app private data (messenger history too)
@@ -241,7 +241,7 @@ fn export(serial: &Serial, dir: &Path, item: &Export) -> Result<()> {
     if rows == 0 {
         ui::say(&format!("  The phone returned no {} at all.", item.label));
         let label = format!("The phone has no {} (go on)", item.label);
-        if !approve(CONFIRM_PHRASE, &label)? {
+        if !approve(CONFIRM_WORD, &label)? {
             return Err(
                 format!("stopped at an empty {} export; backup stopped", item.label).into(),
             );
@@ -344,9 +344,9 @@ pub fn backup(cache: &Path, serial: &Serial) -> Result<PathBuf> {
 /// What the record says when the owner went on without a backup.
 pub const NO_BACKUP: &str = "no backup taken";
 
-const NO_BACKUP_PHRASE: &str = "no backup";
+const NO_BACKUP_WORD: &str = "no backup";
 
-/// The choice before anything is read from the phone: back up, or skip (which takes a typed phrase,
+/// The choice before anything is read from the phone: back up, or skip (which needs its own approval,
 /// since nothing else stores the data). `true` when the backup is to be taken.
 pub fn choose_backup() -> Result<bool> {
     let entries = [
@@ -369,7 +369,7 @@ pub fn choose_backup() -> Result<bool> {
     log::line("no backup taken: skipped at the owner's request");
     ui::say("\nNO BACKUP will be taken. Going on erases Android and everything stored on the phone, with no copy of it.");
     if approve(
-        NO_BACKUP_PHRASE,
+        NO_BACKUP_WORD,
         "Go on without a backup (the data is gone for good)",
     )? {
         Ok(false)
@@ -467,7 +467,7 @@ fn take_backup(cache: &Path, serial: &Serial, dir: &Path) -> Result<PathBuf> {
 
 pub fn confirm_losses() -> Result<()> {
     ui::say(&format!("\n{NOT_BACKED_UP}\n"));
-    if !approve(CONFIRM_PHRASE, "The screen lock is off (confirm)")? {
+    if !approve(CONFIRM_WORD, "The screen lock is off (confirm)")? {
         return Err("stopped; nothing was written to the phone".into());
     }
     Ok(())

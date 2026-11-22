@@ -28,7 +28,7 @@
         pkgs:
         let
           hooked = pkgs.callPackage ./pkgs/nura-install { testHooks = true; };
-          # The shipped build with a cache the sandbox can write, so its "nothing to do" path can run.
+          # The shipped build with a cache the sandbox can write, so it can start a run and write its transcript there.
           shippedCacheDir = "/tmp/nura-install-shipped-cache";
           shipped = pkgs.callPackage ./pkgs/nura-install { cacheDir = shippedCacheDir; };
         in

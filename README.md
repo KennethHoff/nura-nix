@@ -23,7 +23,7 @@ You need:
 - Linux with Nix installed (macOS support planned)
 - the phone's bootloader unlocked, or let the tool unlock it; its page under Devices says how
 - a USB cable, plugged straight into the computer, without a hub
-- about 12 GB free on the computer
+- about 12 GiB free on the computer
 
 Then:
 
@@ -36,7 +36,7 @@ A run takes about 15–30 minutes. The backup and the first download take most o
 
 A locked bootloader adds an unlock after the backup. It erases the phone, twice, and each erase waits for your approval and for a confirmation on the phone. This part has not been tried on a locked phone.
 
-If the run stops before you approve the install, nothing on the phone has changed. Run the same command again to start over from wherever the phone is.
+If the run stops before you approve the unlock or the install, nothing on the phone has changed. Run the same command again to start over from wherever the phone is.
 
 If it stops during the unlock, run the same command again with the phone in fastboot. It finishes the unlock and goes on.
 
