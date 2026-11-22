@@ -1,5 +1,5 @@
 //! The only path to the phone's storage. A `Group` is a batch of writes that must finish together; it
-//! can only be built by `install` and `reboot`, each of which runs the
+//! can only be built by `install`, `reinstall` and `reboot`, each of which runs the
 //! allowlist guard, and `execute` is the only thing that runs one.
 use crate::cmd::{self, Sink, Spec};
 use crate::config;
@@ -34,6 +34,13 @@ pub struct Phone {
     pub record: Record,
 }
 
+/// Where an install starts from; decides what a stop at its gate leaves behind.
+#[derive(Clone, Copy)]
+pub enum Origin {
+    Fresh,
+    Recorded,
+}
+
 enum After {
     Set(State),
     Keep,
@@ -44,6 +51,7 @@ pub struct Group {
     phrase: &'static str,
     writes: Vec<Vec<OsString>>,
     images: Vec<Verified>,
+    erases_nura: bool,
     /// After the writes only the phone's identity can be asked again: erasing changes other answers.
     identity_only: bool,
     in_progress: Option<State>,
@@ -98,7 +106,7 @@ impl Group {
         Ok(self)
     }
 
-    pub fn install(nura: &NuraImages) -> Result<Self> {
+    pub fn install(nura: &NuraImages, origin: Origin) -> Result<Self> {
         Group {
             title: "Install Nura",
             phrase: "install nura",
@@ -109,11 +117,26 @@ impl Group {
                 flash("boot", &nura.boot),
             ],
             images: vec![nura.boot.clone(), nura.rootfs.clone()],
+            erases_nura: false,
             identity_only: false,
             in_progress: Some(State::NuraInProgress),
             after: After::Set(State::NuraInstalled),
-            unchanged: "The phone is unchanged Android and there is no record; boot it normally to run again (a new run makes a new backup).",
+            unchanged: match origin {
+                Origin::Fresh => "The phone is unchanged Android and there is no record; boot it normally to run again (a new run makes a new backup).",
+                Origin::Recorded => "The record is unchanged.",
+            },
             failed: "the phone is in fastboot but may not boot",
+        }
+        .checked()
+    }
+
+    pub fn reinstall(nura: &NuraImages) -> Result<Self> {
+        Group {
+            title: "Reinstall Nura",
+            phrase: "reinstall nura",
+            erases_nura: true,
+            identity_only: false,
+            ..Group::install(nura, Origin::Recorded)?
         }
         .checked()
     }
@@ -125,10 +148,11 @@ impl Group {
             phrase: "reboot",
             writes: vec![words(&["reboot".as_ref()])],
             images: Vec::new(),
+            erases_nura: false,
             identity_only: true,
             in_progress: None,
             after: After::Keep,
-            unchanged: "All writes are done and the record says `nura-installed`; the phone is still in fastboot. Reboot it with `fastboot -s {serial} reboot`.",
+            unchanged: "All writes are done and the record says `nura-installed`; the phone is still in fastboot. Reboot it with `fastboot -s {serial} reboot`, or run `nura-install` again.",
             failed: "the writes are done; reboot the phone by holding Power",
         }
         .checked()
@@ -180,6 +204,7 @@ pub fn images_fit(serial: &Serial, slot: Slot, group: &Group) -> Result<()> {
 fn approval_label(phrase: &str) -> &'static str {
     match phrase {
         "install nura" => "Install Nura (erases Android and all its data)",
+        "reinstall nura" => "Reinstall Nura (erases Nura and all its data)",
         _ => "Reboot the phone (all writes are done)",
     }
 }
@@ -192,6 +217,9 @@ fn gate(phone: &Phone, group: &Group) -> Result<bool> {
             phone.serial,
             display_args(args)
         ));
+    }
+    if group.erases_nura {
+        ui::say("This erases everything on Nura; there is no backup of it.");
     }
     prompt::approve(group.phrase, approval_label(group.phrase))
 }
@@ -252,7 +280,7 @@ pub fn execute(phone: &Phone, group: Group, applying: &'static Step) -> Result<(
     guard(&group.writes)?;
     if !gate(phone, &group)? {
         return Err(format!(
-            "stopped at the `{}` gate. Nothing from this group was written. {}",
+            "stopped at the `{}` gate. Nothing from this group was written. {} Run `nura-install` again to continue.",
             group.phrase,
             group.unchanged.replace("{serial}", phone.serial.as_str())
         )
@@ -280,12 +308,8 @@ pub fn execute(phone: &Phone, group: Group, applying: &'static Step) -> Result<(
             format!(" The record says `{}`.", s.name())
         });
         return Err(format!(
-            "{failure}. Writes that ran: {}.{record} {}.",
-            if ran.is_empty() {
-                "none".to_string()
-            } else {
-                ran.join("; ")
-            },
+            "{failure}. Writes that ran: {}.{record} {}. Run `nura-install` again from fastboot to finish.",
+            if ran.is_empty() { "none".to_string() } else { ran.join("; ") },
             group.failed
         )
         .into());
@@ -298,9 +322,7 @@ pub fn execute(phone: &Phone, group: Group, applying: &'static Step) -> Result<(
     }
     log::line(&format!("group `{}` finished", group.phrase));
     if block.take_pending()? {
-        return Err(
-            "interrupted while writing; the group finished and the record is current.".into(),
-        );
+        return Err("interrupted while writing; the group finished and the record is current. Run `nura-install` again from fastboot to continue.".into());
     }
     Ok(())
 }
@@ -319,6 +341,7 @@ mod tests {
             phrase: "p",
             writes: vec![args(a)],
             images: Vec::new(),
+            erases_nura: false,
             identity_only: false,
             in_progress: None,
             after: After::Keep,

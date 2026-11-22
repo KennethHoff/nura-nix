@@ -4,19 +4,21 @@ use std::fmt;
 #[derive(Debug)]
 pub enum Fail {
     Stop(String),
+    NothingToDo(String),
 }
 
 impl Fail {
     pub fn exit_code(&self) -> u8 {
         match self {
             Fail::Stop(_) => 1,
+            Fail::NothingToDo(_) => 3,
         }
     }
 }
 
 impl fmt::Display for Fail {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Fail::Stop(m) = self;
+        let (Fail::Stop(m) | Fail::NothingToDo(m)) = self;
         f.write_str(m)
     }
 }

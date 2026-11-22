@@ -52,6 +52,13 @@ impl Record {
             ..self.clone()
         }
     }
+
+    pub fn with_nura(&self, nura: NuraIdentity) -> Record {
+        Record {
+            nura,
+            ..self.clone()
+        }
+    }
 }
 
 fn phone_dir(cache: &Path, serial: &Serial) -> PathBuf {
@@ -102,6 +109,25 @@ pub fn read(cache: &Path, serial: &Serial) -> Result<Option<Record>> {
             rootfs_sha256: nura_rootfs.to_string(),
         },
     }))
+}
+
+/// Every phone with a record, for runs that start before the phone shows up anywhere.
+pub fn all(cache: &Path) -> Result<Vec<(Serial, Record)>> {
+    let dir = cache.join("phones");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("reading {}: {e}", dir.display()))?;
+        let serial = Serial::new(&entry.file_name().to_string_lossy())?;
+        if let Some(rec) = read(cache, &serial)? {
+            found.push((serial, rec));
+        }
+    }
+    found.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    Ok(found)
 }
 
 fn json_string(s: &str) -> String {
@@ -219,5 +245,21 @@ mod tests {
             );
             fs::remove_dir_all(cache).unwrap();
         }
+    }
+
+    #[test]
+    fn every_record_is_listed_by_serial() {
+        let (cache, _) = cache_with(&render(&record()));
+        let other = Serial::new("S0").unwrap();
+        fs::create_dir_all(phone_dir(&cache, &other)).unwrap();
+        write(&cache, &other, &record().with_state(State::NuraInProgress)).unwrap();
+        let listed: Vec<String> = all(&cache)
+            .unwrap()
+            .iter()
+            .map(|(s, r)| format!("{s} {}", r.state.name()))
+            .collect();
+        assert_eq!(listed, ["S0 nura-in-progress", "S1 nura-installed"]);
+        assert!(all(&cache.join("nowhere")).unwrap().is_empty());
+        fs::remove_dir_all(cache).unwrap();
     }
 }

@@ -10,7 +10,7 @@ use crate::images::{self, NuraImages};
 use crate::nura::{self, Build, Offer};
 use crate::phone::{Serial, Slot};
 use crate::render::{limit, plural, Mark};
-use crate::state::NuraIdentity;
+use crate::state::{self, NuraIdentity, Record};
 use crate::ui::{self, Job};
 use std::path::Path;
 use std::thread::sleep;
@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 const FIX_TOOLS: &str = "[ ] Install or fix the program named above  [ ] Run again.";
 const FIX_DISK: &str = "[ ] Free space in the cache directory, or move it  [ ] Run again.";
+const FIX_RECORD: &str =
+    "[ ] Fix or remove the record file named above, only if you know the phone's state.";
 const FIX_DEVICE: &str = "[ ] Boot into Android  [ ] USB debugging on  [ ] Cable straight to this computer  [ ] Accept the RSA prompt  [ ] Run again.";
 const FIX_PROP: &str = "[ ] Wait until Android is booted and unlocked  [ ] Run again.";
 const FIX_ACCOUNTS: &str =
@@ -159,6 +161,21 @@ pub fn computer(r: &mut Report, cache: &Path) {
     r.check("disk space", FIX_DISK, || host::check_disk(cache));
 }
 
+/// The record an interrupted run or a reinstall starts from.
+pub fn record(r: &mut Report, serial: &Serial, rec: &Record) {
+    r.check("the record", FIX_RECORD, || {
+        Ok((
+            (),
+            format!(
+                "phone {serial} is `{}` (slot {}, Nura build {})",
+                rec.state.name(),
+                rec.slot.as_str(),
+                rec.nura.build
+            ),
+        ))
+    });
+}
+
 #[derive(Default)]
 pub struct Facts {
     pub serial: Option<Serial>,
@@ -220,13 +237,19 @@ pub fn find_phone(r: &mut Report) -> Option<Serial> {
     r.check_named("exactly one phone", waiting, FIX_DEVICE, wait_for_device)
 }
 
-/// The phone on Android, read over adb.
-pub fn adb_side(r: &mut Report, found: Option<Serial>) -> Facts {
+/// The phone on Android, read over adb. A phone that already has a record is not for this run.
+pub fn adb_side(r: &mut Report, cache: &Path, found: Option<Serial>) -> Result<Facts> {
     let mut facts = Facts::default();
     let Some(serial) = found else {
         r.skip("every other adb check", "it needs the phone over adb");
-        return facts;
+        return Ok(facts);
     };
+    if let Some(rec) = state::read(cache, &serial)? {
+        return Err(Fail::NothingToDo(format!(
+            "phone {serial} is `{}`. Power it off, hold Volume Down + Power and run `nura-install` from fastboot.",
+            rec.state.name()
+        )));
+    }
     ui::say(&format!("  phone {serial}"));
     ui::set_phone(&serial);
     let get = |name: &str| adb::getprop(&serial, name);
@@ -256,7 +279,7 @@ pub fn adb_side(r: &mut Report, found: Option<Serial>) -> Facts {
         Ok(((), format!("{level}%")))
     });
     facts.serial = Some(serial);
-    facts
+    Ok(facts)
 }
 
 /// The phone that came back over adb after the bootloader check is the one that was checked.

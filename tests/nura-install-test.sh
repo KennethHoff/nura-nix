@@ -141,7 +141,7 @@ esac
 EOS
 
 # Fake fastboot knobs:
-#   FAKE_FB_SERIAL  the phone's serial in fastboot
+#   FAKE_FB_AFTER=n  `fastboot devices` lists the phone only from its (n+1)th call; FAKE_FB_SERIAL its serial
 #   FAKE_FB_EXTRA=1  a second phone, XYZ789;  FAKE_FB_STATE=<state>  the state column;  FAKE_FB_NOPERM=1  a "no permissions" entry
 #   FAKE_DEVICES_FAIL=1  `fastboot devices` exits 1;  FAKE_SWAP_FROM=n  the serial changes from the nth `devices` call
 #   FAKE_PRODUCT, FAKE_USERSPACE, FAKE_UNLOCKED, FAKE_SLOT, FAKE_SLOTS, FAKE_FB_BATTERY, FAKE_SNAPSHOT,
@@ -232,7 +232,7 @@ case "$1" in
     n=$(( $(cat "$COUNT" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$COUNT"
     [ -n "${FAKE_SWAP_FROM:-}" ] && [ "$n" -ge "$FAKE_SWAP_FROM" ] && S=XYZ789
-    printf '%s\t%s\n' "$S" "${FAKE_FB_STATE:-fastboot}"
+    [ "$n" -gt "${FAKE_FB_AFTER:-0}" ] && printf '%s\t%s\n' "$S" "${FAKE_FB_STATE:-fastboot}"
     [ -z "${FAKE_FB_EXTRA:-}" ] || printf 'XYZ789\tfastboot\n'
     [ -z "${FAKE_FB_NOPERM:-}" ] || printf '????????????\tno permissions (user)\n'
     exit 0 ;;
@@ -272,9 +272,16 @@ done_phrase='Confirm'
 choice='phosh\n'
 confirmations="${choice}$done_phrase\nbackup\n"
 fresh_in="${confirmations}install nura\nreboot\n"
+install_in="${choice}install nura\nreboot\n"
+reinstall_in="${choice}reinstall nura\nreboot\n"
 fresh_cache() { rm -rf "$cache"; }
-again() { run "$fresh_in"; } # a full run that keeps the cache
-go() { fresh_cache; again; }
+set_record() { # state [slot]: a record
+  mkdir -p -m 700 "$cache/phones/ABC123"
+  jq -n --arg s "$1" --arg slot "${2:-a}" \
+    --arg nb "$(sum "$root/boot.raw")" --arg nr "$(sum "$root/rootfs.raw")" \
+    '{state: $s, slot: $slot, backup: "/b",
+      nura_build: "fake", nura_boot_sha256: $nb, nura_rootfs_sha256: $nr}' > "$STATE_FILE"
+}
 state() { jq -r .state "$STATE_FILE"; }
 run() { # stdin, args...
   local input=$1
@@ -336,8 +343,9 @@ step_blocks() { # name, file: every header has its block, one actor per step; an
 gate_precedes_its_write() { # name, file
   grep -E '^== Step ' "$2" | sed -E 's/^== Step [0-9]+ of [0-9]+ · //; s/ +POINT OF NO RETURN$//' | awk -v name="$1" '
     prev ~ /^YOU: Approve the install$/ && $0 != "TOOL: Install Nura" { bad = 1 }
+    prev ~ /^YOU: Approve the reinstall$/ && $0 != "TOOL: Reinstall Nura" { bad = 1 }
     prev ~ /^YOU: Approve the reboot$/ && $0 != "TOOL: Restart the phone" { bad = 1 }
-    /^TOOL: (Install Nura|Restart the phone)$/ && prev !~ /^YOU: Approve the / { bad = 1 }
+    /^TOOL: (Install Nura|Reinstall Nura|Restart the phone)$/ && prev !~ /^YOU: Approve the / { bad = 1 }
     { prev = $0 }
     END { exit bad }' || fail "$1: a gate's YOU step does not directly precede the TOOL step that writes"
 }
@@ -421,9 +429,10 @@ export NURA_INSTALL_CURL=$root/bin/curl
 ## Fresh from Android
 
 fresh_cache
-run "$fresh_in"
+FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "fresh install exited $rc"
 [ "$(cat "$LOG")" = "devices
+devices
 $fb_all
 devices
 $fb_checks
@@ -507,12 +516,13 @@ grep -q 'outcome: finished' "$transcript" || fail "transcript lacks the outcome"
 [ "$(grep -c 147147 "$transcript")" = "$(grep 147147 "$transcript" | grep -ci 'log in as\|user / 147147\|Log in: ')" ] || fail "the password appears in the transcript outside the login instructions"
 
 # Cached files are re-hashed, never trusted.
-again
+set_record nura-installed
+run "$reinstall_in"
 [ "$rc" = 0 ] || fail "cached rerun exited $rc"
 grep -q 'cached nura-boot.img.xz: hash matches' "$root/out" || fail "cache not reused"
 printf 'x' >> "$cache/downloads/nura-boot.img.xz"
 printf 'damaged' > "$cache/downloads/nura-rootfs.img"
-again
+run "$reinstall_in"
 [ "$rc" = 0 ] || fail "rerun over damaged cache exited $rc"
 grep -q 'download nura-boot.img.xz: ' "$root/out" || fail "a damaged download was not fetched again"
 [ "$(sum "$cache/downloads/nura-boot.img.xz")" = "$(sum "$root/srv/nura-boot.img.xz")" ] || fail "the cached download is still damaged"
@@ -520,25 +530,52 @@ grep -q 'download nura-boot.img.xz: ' "$root/out" || fail "a damaged download wa
 
 # The slot written to the record is the phone's.
 fresh_cache
-FAKE_SUFFIX=_b FAKE_SLOT=b run "$fresh_in"
+FAKE_SUFFIX=_b FAKE_SLOT=b FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "slot b install exited $rc"
 [ "$(jq -r .slot "$STATE_FILE")" = b ] || fail "the record does not hold the phone's slot b"
 
 # CRLF line endings from adb shell are handled.
 fresh_cache
-FAKE_CRLF=1 run "$fresh_in"
+FAKE_CRLF=1 FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "CRLF adb output exited $rc"
 
 # ... also with a path over 100 bytes, which the tar writes a long-name entry for.
 longdir=$root/sdcard/$(printf 'd%.0s' $(seq 60))/$(printf 'e%.0s' $(seq 60))
 mkdir -p "$longdir" && echo hi > "$longdir/f"
-NURA_INSTALL_CACHE=$root/cache2 run "$fresh_in"
+NURA_INSTALL_CACHE=$root/cache2 FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "the install with a long path exited $rc"
 [ "$(planned "$root/cache2")" = "$(stat -c %s "$root"/cache2/backups/ABC123/backup-*/sdcard.tar)" ] || fail "the planned tar length $(planned "$root/cache2") differs from the stream with a long path"
 rm -rf "$root/sdcard/ddd"* "$root/cache2"
 
-## Arguments
+## What the phone's state and its record decide
 
+fresh_cache
+FAKE_FB_AFTER=0 run "$choice"
+refused "a phone in fastboot with no record" 'has no record' 3
+[ ! -e "$cache/phones" ] || fail "nothing-to-do wrote a record"
+set_record nura-installed
+FAKE_FB_AFTER=9 FAKE_ADB=none run ''
+refused "an installed phone, not in fastboot" 'hold Volume Down + Power' 3
+! grep -q 'Choose' "$root/out" || fail "a menu was offered where only one action is left"
+set_record nura-in-progress
+FAKE_FB_AFTER=9 FAKE_ADB=none run ''
+refused "a half installed phone, not in fastboot" 'is `nura-in-progress`' 3
+set_record nura-installed
+mkdir -p -m 700 "$cache/phones/OTHER1" && cp "$STATE_FILE" "$cache/phones/OTHER1/state.json"
+FAKE_FB_AFTER=9 FAKE_ADB=none run ''
+refused "two recorded phones and none in fastboot" 'phones have a record and none is in fastboot'
+rm -rf "$cache/phones/OTHER1"
+set_record nura-installed
+run "$reinstall_in"
+[ "$rc" = 0 ] || fail "reinstalling exited $rc"
+grep -q 'Nura is installed: this run reinstalls it' "$root/out" || fail "the reinstall was not announced"
+[ "$(sections_of "$root/out")" = "[Preflight] 1/10 2/10 3/10 4/10 5/10 [Install] 6/10 7/10 [Finish] 8/10 9/10 10/10" ] || fail "reinstall sections: $(sections_of "$root/out")"
+set_record nura-installed
+FAKE_FB_AFTER=9 run "$choice"
+refused "a recorded phone on adb" 'from fastboot' 3
+fresh_cache
+FAKE_FB_AFTER=9 FAKE_ADB=none run "$choice"
+refused "no phone anywhere" 'no phone is visible over adb'
 for args in "--os nura" "--os" "nura" "-x"; do
   run '' $args
   [ "$rc" = 2 ] || fail "nura-install $args exited $rc, not 2"
@@ -547,11 +584,20 @@ done
 run '' --help
 [ "$rc" = 0 ] || fail "--help exited $rc"
 
+## Finishing nura-in-progress from fastboot
+
+set_record nura-in-progress
+run "$install_in"
+[ "$rc" = 0 ] || fail "finishing exited $rc"
+[ "$(state)" = nura-installed ] || fail "finishing left $(state)"
+[ "$(writes | wc -l)" = 5 ] || fail "finishing ran $(writes)"
+grep -q 'erases everything on Nura' "$root/out" && fail "finishing an install claims to erase Nura"
+
 ## Android phase stops
 
 stop_fresh() { # name, message: a stop before any write or record
   fresh_cache
-  run "$fresh_in"
+  FAKE_FB_AFTER=1 run "$fresh_in"
   refused "$1" "$2"
   untouched_fresh "$1"
 }
@@ -577,7 +623,7 @@ FAKE_ADB_EXTRA=1 stop_early "two phones over adb" '2 adb devices are connected'
 
 confirmation_stop() { # name, input
   fresh_cache
-  run "$2"
+  FAKE_FB_AFTER=1 run "$2"
   [ "$rc" = 1 ] || fail "$1 exited $rc"
   no_backup "$1"
   no_writes "$1"
@@ -594,15 +640,15 @@ confirmation_stop "an interface that is not offered" 'kde\nPhosh\n'
 ## Empty backups need a typed acknowledgement
 
 fresh_cache
-FAKE_CONTENT_EMPTY=content://sms run "$fresh_in"
+FAKE_CONTENT_EMPTY=content://sms FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 1 ] || fail "empty SMS export without acknowledgement exited $rc"
 no_writes "empty SMS"
 grep -q 'sms.txt: 0 rows' "$root/out" || fail "an empty export was not counted"
 fresh_cache
-FAKE_CONTENT_EMPTY=content://sms run "${confirmations}Confirm\ninstall nura\nreboot\n"
+FAKE_CONTENT_EMPTY=content://sms FAKE_FB_AFTER=1 run "${confirmations}Confirm\ninstall nura\nreboot\n"
 [ "$rc" = 0 ] || fail "acknowledged empty SMS export exited $rc"
 fresh_cache
-FAKE_CONTENT_EMPTY=content://sms run "${confirmations}confirm\n"
+FAKE_CONTENT_EMPTY=content://sms FAKE_FB_AFTER=1 run "${confirmations}confirm\n"
 [ "$rc" = 1 ] || fail "a near-miss Confirm was accepted"
 no_writes "near-miss Confirm"
 
@@ -622,7 +668,8 @@ fb_only='^(devices|-s [A-Z0-9]+ getvar [a-z:_-]+)$'
 preflight_clean() { # name: nothing written, recorded or stored for the install
   no_writes "$1"
   # only where the phone is, or (a failure after the bootloader check) the one `getvar all` read as well
-  [ ! -s "$LOG" ] || [ "$(cat "$LOG")" = "devices
+  [ "$(cat "$LOG")" = devices ] || [ "$(cat "$LOG")" = "devices
+devices
 $fb_all" ] || fail "$1: fastboot was asked more than the early read: $(cat "$LOG")"
   [ ! -e "$cache/phones" ] || fail "$1: wrote a record"
   [ ! -e "$cache/backups" ] || fail "$1: a backup directory exists"
@@ -632,7 +679,7 @@ pre_fail() { # name, message(s) that must be reported
   local name=$1
   shift
   fresh_cache
-  run "$fresh_in"
+  FAKE_FB_AFTER=1 run "$fresh_in"
   [ "$rc" = 1 ] || fail "$name exited $rc, not 1"
   for m in "$@"; do grep -qF -- "$m" "$root/out" || fail "$name not reported as: $m"; done
   grep -q '^Not ready: ' "$root/out" || fail "$name gave no verdict"
@@ -655,7 +702,7 @@ grep -q 'Step 8 of 17 .*Find, download and verify the images' "$root/out" || fai
 make_index
 # The bootloader is read first, before any download or backup: every wrong answer is reported at once, then the run stops.
 fresh_cache
-FAKE_PSIZE_MISSING=boot_a FAKE_UNLOCKED=no FAKE_FB_BATTERY=no run "$fresh_in"
+FAKE_PSIZE_MISSING=boot_a FAKE_UNLOCKED=no FAKE_FB_BATTERY=no FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 1 ] || fail "a wrong bootloader exited $rc"
 for m in 'no value for `getvar partition-size:boot_a`' 'unlocked: no' 'battery-soc-ok: no'; do
   grep -qF -- "$m" "$root/out" || fail "the early bootloader check did not report: $m"
@@ -668,14 +715,14 @@ no_writes "a failed bootloader check"
 [ ! -e "$cache/phones" ] || fail "a failed bootloader check wrote a record"
 # A phone that is not on Android needs the owner first: the run waits for it in a step of its own.
 fresh_cache
-FAKE_ADB_AFTER=1 NURA_INSTALL_WAIT_SECONDS=10 run "$fresh_in"
+FAKE_ADB_AFTER=1 NURA_INSTALL_WAIT_SECONDS=10 FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "the run that waited for the phone exited $rc"
 [ "$(sections_of "$root/out")" = "[Preflight] 1/18 2/18 3/18 4/18 5/18 6/18 7/18 8/18 9/18 [Prepare] 10/18 11/18 12/18 13/18 [Install] 14/18 15/18 [Finish] 16/18 17/18 18/18" ] || fail "sections with the wait: $(sections_of "$root/out")"
 grep -q '^== Step 2 of 18 · YOU: Connect the phone with USB debugging$' "$root/out" || fail "no step to connect the phone"
 grep -q '^  \.\.\. waiting for the phone over adb (up to 10 s)' "$root/out" || fail "the wait for adb was not named"
 # A YOU step ends when the phone shows its result: the restart step stays open until the phone is back over adb.
 fresh_cache
-FAKE_ADB_BACK_AFTER=2 NURA_INSTALL_WAIT_SECONDS=20 run "$fresh_in"
+FAKE_ADB_BACK_AFTER=2 NURA_INSTALL_WAIT_SECONDS=20 FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 0 ] || fail "the run that waited for the phone to come back exited $rc"
 awk '
   /^== Step 7 of 17 · YOU: Restart into/ { in5 = 1; next }
@@ -684,7 +731,7 @@ awk '
   in5 && /^  Step 7 of 17 done/ { done5 = $0 }
   END { if (!waited || done5 ~ / 0\.[0-9] s$/) { print "waited=" waited " done=" done5; exit 1 } }' "$root/out" || fail "the restart step ended before the phone was back over adb"
 fresh_cache
-run "$choice"
+FAKE_FB_AFTER=1 run "$choice"
 grep -q '  Preflight passed: ' "$root/out" || fail "the Preflight did not pass: $(grep -E 'FAIL|Not ready' "$root/out")"
 cp "$root/out" "$root/out.preflight"
 plain_output "preflight" "$root/out.preflight"
@@ -704,10 +751,11 @@ printf '%s\n' "$curls" | grep -- ' -sI ' | grep -qv -- '--connect-timeout 30 --m
 
 ## Fastboot checks
 
-fb_fail() { # name, message: a wrong answer stops the run before anything is written or recorded
-  go
+fb_fail() { # name, message
+  set_record nura-installed
+  run "$reinstall_in"
   refused "$1" "$2"
-  [ ! -e "$cache/phones" ] || fail "$1: wrote a record"
+  [ "$(state)" = nura-installed ] || fail "$1 changed the record"
 }
 FAKE_PRODUCT=FP5 fb_fail "wrong product" 'product: FP5'
 FAKE_USERSPACE=yes fb_fail "fastbootd" 'is-userspace: yes'
@@ -734,58 +782,78 @@ FAKE_FB_STATE=adb fb_fail "a device that is not in fastboot" 'not fastboot'
 FAKE_FB_NOPERM=1 fb_fail "a device without permission" 'no permission'
 FAKE_DEVICES_FAIL=1 fb_fail "failed fastboot devices" 'fastboot devices` failed'
 fresh_cache
-FAKE_FB_SERIAL=XYZ789 run "$fresh_in"
+FAKE_FB_SERIAL=XYZ789 FAKE_FB_AFTER=1 run "$fresh_in"
 refused "wrong serial after the adb phase" 'is XYZ789, not ABC123'
 [ ! -e "$cache/phones" ] || fail "wrong serial wrote a record"
 
 ## Gates
 
-fresh_cache
-run "${confirmations}"'install\nInstall Nura\nINSTALL NURA\nuninstall nura\ninstall nura\nreboot\n'
+set_record nura-in-progress
+run "${choice}"'install\nInstall Nura\nINSTALL NURA\nuninstall nura\ninstall nura\nreboot\n'
 [ "$rc" = 0 ] || fail "typos then the phrase exited $rc"
 [ "$(grep -c 'That is not one of install nura' "$root/out")" = 4 ] || fail "typos not all re-asked"
-fresh_cache
-run "${confirmations}install nura\nstop\n"
+set_record nura-installed
+run "${choice}install nura\n"
+refused "install phrase at a reinstall gate" 'stopped at the `reinstall nura` gate'
+grep -q 'erases everything on Nura' "$root/out" || fail "the reinstall gate does not say it erases Nura"
+run "${choice}stop\n"
+refused "stop at the reinstall gate" 'stopped at the `reinstall nura` gate'
+[ "$(state)" = nura-installed ] || fail "stop changed the record"
+run "$choice"
+refused "end of input at the gate" 'stopped at the `reinstall nura` gate'
+run "${choice}reinstall nura\nstop\n"
 [ "$rc" = 1 ] || fail "stop at the reboot gate exited $rc"
 grep -q 'stopped at the `reboot` gate' "$root/out" || fail "no reboot gate report"
 [ "$(state)" = nura-installed ] || fail "reboot gate changed the record"
 ! grep -q reboot "$LOG" || fail "rebooted after stop"
 fresh_cache
-run "${confirmations}stop\n"
+FAKE_FB_AFTER=1 run "${confirmations}stop\n"
 refused "stop at the first gate of a fresh run" 'unchanged Android'
 [ ! -e "$cache/phones" ] || fail "a stopped fresh run left a record"
-fresh_cache
-run "$confirmations"
-refused "end of input at the gate" 'stopped at the `install nura` gate'
 
 # Gates and confirmations read only a terminal; without the piped-input allowance nothing starts.
 fresh_cache
-NURA_INSTALL_ALLOW_PIPED_INPUT= run "$fresh_in"
+NURA_INSTALL_ALLOW_PIPED_INPUT= FAKE_FB_AFTER=1 run "$fresh_in"
 refused "piped input on a fresh install" 'interactive terminal'
 ! grep -q 'getprop\|exec-out' "$ADB_LOG" || fail "a run without a terminal went on to check the phone"
+set_record nura-installed
+NURA_INSTALL_ALLOW_PIPED_INPUT= run "$reinstall_in"
+refused "piped input at a gate" 'interactive terminal'
+! grep -q getvar "$LOG" || fail "a run without a terminal went on to check fastboot"
+fresh_cache
+NURA_INSTALL_ALLOW_PIPED_INPUT= FAKE_FB_AFTER=0 run ''
+[ "$rc" = 3 ] || fail "a run that cannot reach a gate was refused for lacking a terminal"
 
 ## Failed write, interrupted group, a phone that vanishes
 
-FAKE_FAIL0=dtbo go
+set_record nura-installed
+set_record nura-installed
+FAKE_FAIL0=dtbo run "$reinstall_in"
 [ "$rc" = 1 ] || fail "a write that printed FAILED and exited 0 let the run go on (exit $rc)"
 grep -q 'fastboot exited 0 but printed `.*FAILED' "$root/out" || fail "the FAILED line was not named: $(tail -5 "$root/out")"
 ! grep -q ' flash ' "$LOG" || fail "writes went on after a FAILED line"
 grep -q 'output: .*FAILED (remote' "$cache/logs/"* || fail "fastboot's output is not in the transcript"
 grep -q 'fastboot getvar partition-size:userdata_a: .*Variable Not found' "$cache/logs/"* || fail "a getvar answer is not in the transcript"
-FAKE_FAIL=userdata go
+set_record nura-installed
+FAKE_FAIL=userdata run "$reinstall_in"
 [ "$rc" = 1 ] || fail "failed write exited $rc"
 grep -q 'Writes that ran: erase dtbo; erase vendor_boot' "$root/out" || fail "no report of the writes that ran"
 grep -q 'The record for phone ABC123 says `nura-in-progress`' "$root/out" || fail "no state in the failure report"
 [ "$(state)" = nura-in-progress ] || fail "failed write left $(state)"
 ! grep -Eq 'flash boot|reboot' "$LOG" || fail "kept going after a failed write"
+run "$install_in"
+[ "$rc" = 0 ] || fail "finishing after a failed write exited $rc"
+[ "$(state)" = nura-installed ] || fail "finishing after a failed write left $(state)"
 
-FAKE_HANG=userdata NURA_INSTALL_WRITE_TIMEOUT_SECONDS=1 go
+set_record nura-installed
+FAKE_HANG=userdata NURA_INSTALL_WRITE_TIMEOUT_SECONDS=1 run "$reinstall_in"
 [ "$rc" = 1 ] || fail "a hung write exited $rc"
 grep -q 'did not finish within 1 seconds and was killed' "$root/out" || fail "a hung write was not reported"
 [ "$(state)" = nura-in-progress ] || fail "a hung write left $(state)"
 ! grep -Eq 'flash boot|reboot' "$LOG" || fail "kept going after a hung write"
 
-FAKE_SIG_SLEEP=1 FAKE_SIG_ON=boot go
+set_record nura-installed
+FAKE_SIG_SLEEP=1 FAKE_SIG_ON=boot run "$reinstall_in"
 [ "$rc" = 1 ] || fail "interrupted install exited $rc"
 grep -q 'interrupted while writing' "$root/out" || fail "no interruption report"
 [ "$(grep -c 'interrupt noted; finishing this group first' "$root/out")" = 1 ] || fail "the held interrupt was not noted exactly once"
@@ -798,22 +866,24 @@ mask=$(sed -n 's/^SigBlk:\s*//p' "$SIG_LOG" | head -1)
 ## Nura's index
 
 make_index
+set_record nura-installed
 rm -rf "$cache/downloads"
 cp "$root/srv/nura-rootfs.img.xz" "$root/good.xz"
 printf 'x' >> "$root/srv/nura-rootfs.img.xz"
-again
+run "$reinstall_in"
 refused "corrupt download" "does not match Nura's index"
 [ ! -e "$cache/downloads/nura-rootfs.img.xz" ] || fail "a corrupt download was kept"
 cp "$root/good.xz" "$root/srv/nura-rootfs.img.xz"
 # A hash the index gets wrong stops the run before anything is written.
 make_index "$fp6_images"' |= (if (.name | endswith("-boot.img.xz")) then .sha256 = "'"$other_sha"'" else . end)'
 rm -rf "$cache/downloads"
-again
+run "$reinstall_in"
 refused "a wrong sha256 in the index" "nura-boot.img.xz does not match Nura's index"
-! grep -q 'Approve the install' "$root/out" || fail "the gate was shown with a download that did not verify"
+[ "$(state)" = nura-installed ] || fail "a refused download changed the record"
+! grep -q 'Approve the reinstall' "$root/out" || fail "the gate was shown with a download that did not verify"
 make_index
 # The newest build of the chosen interface in the newest release is the one installed, and it is shown.
-again
+run "$reinstall_in"
 [ "$rc" = 0 ] || fail "the newest build exited $rc"
 [ "$(cat "$FLASHED/userdata")" = nura-rootfs ] || fail "an older build was installed"
 grep -q 'Nura build: edge phosh 2026-11-13T23:32:00' "$root/out" || fail "the build was not shown"
@@ -822,69 +892,77 @@ grep -q 'index.json' "$CURL_LOG" || fail "the index was not fetched this run"
 rel_img() { jq -n --arg n "$1" --arg u "file://$root/srv/rel-$2.img.xz" --arg s "$(sum "$root/srv/rel-$2.img.xz")" '{name: $n, timestamp: "2026-12-01T10:00:00", url: $u, sha256: $s}'; }
 newer_release='.releases += [{name: "v27.01", pretty_name: "v27.01", devices: [{name: "fairphone-fp6", pretty_name: "x", interfaces: [{name: "phosh", pretty_name: "Phosh", images: ['"$(rel_img 20261201-1000-nura-v27.01-phosh-fairphone-fp6-boot.img.xz boot)"', '"$(rel_img 20261201-1000-nura-v27.01-phosh-fairphone-fp6.img.xz rootfs)"']}]}]}]'
 make_index "$newer_release"
-again
+set_record nura-installed
+run "$reinstall_in"
 [ "$rc" = 0 ] || fail "a newer release exited $rc"
 [ "$(cat "$FLASHED/userdata")" = rel-rootfs ] || fail "the newer release's build was not installed"
 grep -q 'Nura build: v27.01 phosh 2026-12-01T10:00:00' "$root/out" || fail "the newer release was not shown"
 # Only builds that exist count: without the newer ones the older build is installed.
 make_index "del($fp6_images | select(.timestamp | startswith(\"2026-11-13\")))"
-again
+set_record nura-installed
+run "$reinstall_in"
 [ "$rc" = 0 ] || fail "the older build exited $rc"
 [ "$(cat "$FLASHED/userdata")" = old-rootfs ] || fail "the older build was not installed when it is the newest listed"
 # The interfaces offered are the ones the index lists for the phone; unknown ones are listed by name.
 make_index '.releases |= map(.devices |= map(if .name == "fairphone-fp6" then .interfaces += [(.interfaces[] | select(.name == "phosh") | .name = "lomiri")] | .interfaces |= map(select(.name != "sxmo-de-sway")) else . end))'
-run "sxmo\nlomiri\nConfirm\nbackup\ninstall nura\nreboot\n"
+set_record nura-installed
+run "sxmo\nlomiri\nreinstall nura\nreboot\n"
 [ "$rc" = 0 ] || fail "an interface the index adds exited $rc"
 grep -q '^  lomiri ' "$root/out" || fail "an unknown interface was not listed by name"
 ! grep -q '^  sxmo ' "$root/out" || fail "an interface the index lacks was offered"
 [ "$(grep -c 'That is not one of phosh, plasma, gnome, lomiri' "$root/out")" = 1 ] || fail "a missing interface was not asked again"
 grep -q 'Nura build: edge lomiri ' "$root/out" || fail "the unknown interface's build was not shown"
 make_index 'del(.releases[].devices[] | select(.name == "fairphone-fp6"))'
-again
+set_record nura-installed
+run "$reinstall_in"
 refused "an index with no builds for the phone" 'lists no images for fairphone-fp6'
 make_index "$fp6_images"'.url |= sub("^file://.*"; "https://evil.example/x.img.xz")'
-again
+run "$reinstall_in"
 refused "foreign host" 'downloads may only come from'
 make_index
-NURA_INSTALL_NURA_INDEX=https://evil.example/index.json again
+NURA_INSTALL_NURA_INDEX=https://evil.example/index.json run "$reinstall_in"
 refused "an index from a foreign host" 'downloads may only come from'
-NURA_INSTALL_NURA_INDEX=file://$root/missing.json again
+NURA_INSTALL_NURA_INDEX=file://$root/missing.json run "$reinstall_in"
 refused "an index that cannot be fetched" 'missing.json'
 echo 'not json' > "$root/index.json"
-again
+run "$reinstall_in"
 refused "an index that is not JSON" "reading Nura's index"
 make_index
-NURA_INSTALL_ALLOW_FILE_URLS= again
+NURA_INSTALL_ALLOW_FILE_URLS= run "$reinstall_in"
 refused "file urls by default" 'only https downloads are allowed'
 for empty in url sha256; do
   make_index "$fp6_images"'.'"$empty"' = ""'
-  again
+  run "$reinstall_in"
   refused "empty $empty in the index" 'no URL or no valid sha256'
 done
 make_index
 
 # Images are hashed again right before the first write, after the gate.
+set_record nura-installed
 rm -rf "$cache/downloads"
-FAKE_TAMPER=$cache/downloads/nura-boot.img again
+FAKE_TAMPER=$cache/downloads/nura-boot.img run "$reinstall_in"
 refused "an image changed after the gate" 'nura-boot.img does not match the hash taken when it was unpacked'
+[ "$(state)" = nura-installed ] || fail "a refused write changed the record"
 
 ## The reboot gate asks only who the phone is: erasing may change the snapshot status or the battery answer
 
-FAKE_AFTER_SNAPSHOT=merging FAKE_AFTER_BATTERY=no again
+set_record nura-installed
+FAKE_AFTER_SNAPSHOT=merging FAKE_AFTER_BATTERY=no run "$reinstall_in"
 [ "$rc" = 0 ] || fail "answers that changed after the writes stranded the run (exit $rc)"
 grep -q ' reboot$' "$LOG" || fail "the phone was not rebooted after harmless changes"
-FAKE_AFTER_UNLOCKED=no again
+set_record nura-installed
+FAKE_AFTER_UNLOCKED=no run "$reinstall_in"
 [ "$rc" = 1 ] || fail "a phone that relocked after the writes exited $rc"
 grep -q 'the phone reports `unlocked: no`' "$root/out" || fail "the relock was not named"
 ! grep -q ' reboot$' "$LOG" || fail "rebooted a phone that is no longer unlocked"
 
 ## A screen that stopped taking output (terminal closed) must not stop a group half way
 
-fresh_cache
+set_record nura-installed
 rm -rf "$FLASHED" "$LOG" "$COUNT" "$PCOUNT" "$STATE_LOG" "$WROTE"
 mkdir -p "$FLASHED"
 : > "$LOG"
-printf '%b' "$fresh_in" | "$tool" 2> "$root/err" | head -c 0 || true
+printf '%b' "$reinstall_in" | "$tool" 2> "$root/err" | head -c 0 || true
 ! grep -q panicked "$root/err" || fail "a closed screen panicked: $(cat "$root/err")"
 grep -q ' flash boot ' "$LOG" && grep -q ' reboot$' "$LOG" || fail "a closed screen cut the writes short: $(cat "$LOG")"
 [ "$(state)" = nura-installed ] || fail "a closed screen left the record at $(state)"
@@ -892,14 +970,14 @@ grep -q ' flash boot ' "$LOG" && grep -q ' reboot$' "$LOG" || fail "a closed scr
 ## Host prerequisites
 
 fresh_cache
-NURA_INSTALL_ADB=$root/missing run "$choice"
+NURA_INSTALL_ADB=$root/missing FAKE_FB_AFTER=1 run "$choice"
 refused "a missing prerequisite" 'prerequisite'
-NURA_INSTALL_FASTBOOT=/bin/false run "$choice"
+NURA_INSTALL_FASTBOOT=/bin/false FAKE_FB_AFTER=1 run "$choice"
 refused "a prerequisite that fails" 'prerequisite /bin/false does not run'
-NURA_INSTALL_NEEDED_GIB=999999 run "$choice"
+NURA_INSTALL_NEEDED_GIB=999999 FAKE_FB_AFTER=1 run "$choice"
 refused "too little disk space" 'GiB free'
 chmod 755 "$cache"
-run "$choice"
+FAKE_FB_AFTER=1 run "$choice"
 refused "cache not private" 'private'
 chmod 700 "$cache"
 rc=0
@@ -909,7 +987,7 @@ refused "concurrent run" 'another nura-install'
 ## Terminal behaviour: spinner on a terminal only, progress in the transcript, Ctrl-C, typed-ahead input
 
 fresh_cache
-NURA_INSTALL_PROGRESS_SECONDS=1 FAKE_SLOW_TAR=3 run "$confirmations"
+NURA_INSTALL_PROGRESS_SECONDS=1 FAKE_SLOW_TAR=3 FAKE_FB_AFTER=1 run "$confirmations"
 [ "$rc" = 1 ] || fail "slow backup exited $rc"
 plain_output "slow backup" "$root/out"
 transcript=$cache/logs/$(ls "$cache/logs")
@@ -931,7 +1009,7 @@ pty_begin() { # env assignments for the run
   : > "$LOG"
   mkfifo "$root/tty-in"
   : > "$root/pty"
-  env TERM=xterm NURA_INSTALL_SECURITY_DELAY_MS=$security_delay_ms NURA_INSTALL_SECURITY_DELAY_AFTER_MOVE_MS=$move_delay_ms "$@" script -qefc "$tool" /dev/null < "$root/tty-in" > "$root/pty" 2>&1 &
+  env TERM=xterm NURA_INSTALL_SECURITY_DELAY_MS=$security_delay_ms NURA_INSTALL_SECURITY_DELAY_AFTER_MOVE_MS=$move_delay_ms FAKE_FB_AFTER=1 "$@" script -qefc "$tool" /dev/null < "$root/tty-in" > "$root/pty" 2>&1 &
   spid=$!
   exec 7> "$root/tty-in"
 }
@@ -1067,7 +1145,7 @@ interrupt_during() { # name, stdin, expected text, text to wait for; the slow st
   : > "$root/out"
   local battery=0
   [ "$4" != '... checking battery' ] || battery=8
-  printf '%b' "$2" | FAKE_SLOW_BATTERY=$battery FAKE_SLOW_TAR=8 "$tool" > "$root/out" 2>&1 &
+  printf '%b' "$2" | FAKE_SLOW_BATTERY=$battery FAKE_SLOW_TAR=8 FAKE_FB_AFTER=1 "$tool" > "$root/out" 2>&1 &
   local pid=$!
   wait_for "$root/out" "$4"
   kill -INT "$pid"

@@ -12,38 +12,45 @@ mod phone;
 mod preflight;
 mod prompt;
 mod render;
+mod route;
 mod signals;
 mod state;
 mod steps;
 mod ui;
 
 use fail::{Fail, Result};
-use group::{execute, Group, Phone};
+use group::{execute, Group, Origin, Phone};
 use nura::Offer;
+use phone::Serial;
 use preflight::{Facts, Found, Report};
 use prompt::Entry;
+use route::Route;
 use state::{Record, State};
 use std::path::Path;
 use std::process::ExitCode;
 
 const USAGE: &str = "Usage: nura-install
 
-Takes no arguments: the run follows from the phone's state.
+Takes no arguments: the run follows from the phone's state and its record.
 
   Android over adb, no record     install Nura: one run in four sections (Preflight, Prepare,
                                   Install, Finish)
+  Nura installed, phone in fastboot     reinstall Nura
+  Nura half installed, phone in fastboot  finish the install
   -h, --help                      this text
 
 Exit codes:
   0  finished
   1  stopped or failed (the Preflight: at least one check failed, it runs them all);
      the message says what state the phone and its record are in
-  2  usage error";
+  2  usage error
+  3  nothing to do for the phone's current state";
 
 const WARNINGS: &str = "\
 Rules:
   - never relock the bootloader
-  - never run `qbootctl -s` or switch slots, on either system";
+  - never run `qbootctl -s` or switch slots, on either system
+  - Nura not booting after 1-2 tries: fastboot (Volume Down + Power), then `nura-install` finishes or repeats the install";
 
 /// `Ok(true)` for the help text; the tool takes no other argument.
 fn parse_args(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, String> {
@@ -122,6 +129,10 @@ fn main() -> ExitCode {
                     eprintln!("\nnura-install: {msg}");
                     "stopped"
                 }
+                Fail::NothingToDo(msg) => {
+                    println!("\nNothing to do: {msg}");
+                    "nothing to do"
+                }
             };
             if matches!(fail, Fail::Stop(_)) {
                 let ctx = ui::context();
@@ -143,15 +154,21 @@ fn run() -> Result<()> {
     ui::set_cache(&cache);
     log::open(&cache, &host::timestamp()?, "run")?;
     let _lock = host::lock(&cache)?;
-    prompt::require_terminal()?;
-    match adb::devices() {
-        Ok(devices) => install_fresh(&cache, devices.is_empty()),
+    match route::decide(&cache) {
+        Ok(route) => {
+            prompt::require_terminal()?;
+            match route {
+                Route::Fresh { wait } => install_fresh(&cache, wait),
+                Route::Nura { serial, record } => nura_from_fastboot(&cache, serial, record),
+            }
+        }
         Err(Fail::Stop(msg)) => unreadable_surroundings(&cache, msg),
+        Err(other) => Err(other),
     }
 }
 
-/// The computer could not tell whether a phone is connected: say so after checking what the run needs, in
-/// case that is the cause.
+/// The computer could not tell where the phone is: say so after checking what the run needs, in case
+/// that is the cause.
 fn unreadable_surroundings(cache: &Path, msg: String) -> Result<()> {
     ui::plan(1);
     ui::section("Preflight");
@@ -202,7 +219,7 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     if !wait {
         found_phone = preflight::find_phone(&mut report);
     }
-    let facts = preflight::adb_side(&mut report, found_phone);
+    let facts = preflight::adb_side(&mut report, cache, found_phone)?;
     report.conclude("nura-install")?;
     let Facts {
         serial: Some(serial),
@@ -232,7 +249,7 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     ui::step(&steps::RESTART_TO_ANDROID);
     let mut report = Report::new();
     let found_phone = preflight::find_phone(&mut report);
-    let again = preflight::adb_side(&mut report, found_phone);
+    let again = preflight::adb_side(&mut report, cache, found_phone)?;
     preflight::same_phone(&mut report, &facts, &again);
     ui::step(&steps::FIND_IMAGES);
     let found = preflight::images(&mut report, &offer.build, cache);
@@ -260,7 +277,7 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
         nura,
         nura_identity,
     } = found;
-    let install = Group::install(&nura)?;
+    let install = Group::install(&nura, Origin::Fresh)?;
     group::images_fit(&serial, slot, &install)?;
     let record = Record {
         state: State::NuraInProgress,
@@ -282,6 +299,66 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     ui::step(&steps::APPROVE_INSTALL);
     ui::say(WARNINGS);
     execute(&phone, install, &steps::INSTALL)?;
+
+    ui::section("Finish");
+    ui::step(&steps::APPROVE_REBOOT);
+    execute(&phone, Group::reboot()?, &steps::REBOOT)?;
+    finish_nura(&phone)
+}
+
+fn nura_from_fastboot(cache: &Path, serial: Serial, record: Record) -> Result<()> {
+    ui::set_phone(&serial);
+    ui::plan(10);
+    ui::section("Preflight");
+    ui::say(if record.state == State::NuraInstalled {
+        "  Nura is installed: this run reinstalls it."
+    } else {
+        "  Nura is half installed: this run finishes the install."
+    });
+    ui::step(&steps::CHECK_RECORD);
+    let mut report = Report::new();
+    preflight::computer(&mut report, cache);
+    preflight::record(&mut report, &serial, &record);
+    ui::step(&steps::CHECK_FASTBOOT_RECORDED);
+    let src = preflight::fastboot_side(&mut report, &serial, record.slot);
+    ui::step(&steps::FIND_BUILDS);
+    let offers = preflight::builds(&mut report, cache, &serial, src.as_ref());
+    report.conclude("nura-install")?;
+    let Some(offers) = offers else {
+        return the_run_lost_track();
+    };
+    let offer = choose_interface(offers)?;
+    ui::step(&steps::FIND_NURA);
+    let mut report = Report::new();
+    let nura = preflight::nura_images(&mut report, &offer.build, cache);
+    report.conclude("nura-install")?;
+    let Some((nura, identity)) = nura else {
+        return the_run_lost_track();
+    };
+    let reinstall = record.state == State::NuraInstalled;
+    let phone = Phone {
+        serial,
+        cache: cache.to_path_buf(),
+        record: record.with_nura(identity),
+    };
+
+    ui::section("Install");
+    let (group, approve, apply) = if reinstall {
+        (
+            Group::reinstall(&nura)?,
+            &steps::APPROVE_REINSTALL,
+            &steps::REINSTALL,
+        )
+    } else {
+        (
+            Group::install(&nura, Origin::Recorded)?,
+            &steps::APPROVE_INSTALL,
+            &steps::INSTALL,
+        )
+    };
+    ui::step(approve);
+    ui::say(WARNINGS);
+    execute(&phone, group, apply)?;
 
     ui::section("Finish");
     ui::step(&steps::APPROVE_REBOOT);

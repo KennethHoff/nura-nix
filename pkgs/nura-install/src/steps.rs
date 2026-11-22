@@ -86,6 +86,16 @@ pub const CHECK_COMPUTER: Step = tool(
     &["- programs this run needs start", "- free disk space"],
     Some(NOT_TOUCHED),
 );
+pub const CHECK_RECORD: Step = tool(
+    "Check this computer and the record",
+    Some("under 1 min"),
+    &[
+        "- programs this run needs start",
+        "- free disk space",
+        "- reads the phone's record",
+    ],
+    Some(NOT_TOUCHED),
+);
 pub const CONNECT: Step = you(
     "Connect the phone with USB debugging",
     "connect the phone",
@@ -152,6 +162,16 @@ pub const FIND_IMAGES: Step = tool(
     ],
     Some("nothing sent"),
 );
+pub const FIND_NURA: Step = tool(
+    "Download and verify the Nura images",
+    Some("1-15 min (cached files are only re-checked)"),
+    &[
+        "- downloads missing files",
+        "- checks every file against its hash in Nura's index",
+        "- unpacks the images and hashes them",
+    ],
+    Some("nothing sent"),
+);
 pub const CONFIRM: Step = you(
     "Confirm what is lost",
     "confirm",
@@ -190,6 +210,12 @@ pub const CHECK_FASTBOOT: Step = tool(
     &["- reads serial, slot, partition layout, unlock state, update status, battery"],
     Some("unchanged"),
 );
+pub const CHECK_FASTBOOT_RECORDED: Step = tool(
+    "Check the phone in fastboot",
+    Some("under 10 s"),
+    &["- reads serial, slot, partition layout, unlock state, update status, battery"],
+    Some("unchanged"),
+);
 pub const APPROVE_INSTALL: Step = approval(
     "Approve the install",
     "choose Install Nura",
@@ -203,6 +229,22 @@ pub const INSTALL: Step = tool(
         "- re-checks the phone (same serial, still unlocked, same slot)",
         "- erases dtbo, vendor_boot",
         "- writes userdata, boot",
+    ],
+    Some(HANDS_OFF),
+);
+pub const APPROVE_REINSTALL: Step = approval(
+    "Approve the reinstall",
+    "choose Reinstall Nura",
+    &[],
+    &["- erases Nura and all its data, installs it again"],
+);
+pub const REINSTALL: Step = tool(
+    "Reinstall Nura",
+    Some("3-10 min"),
+    &[
+        "- re-checks the phone (same serial, still unlocked, same slot)",
+        "- erases dtbo, vendor_boot",
+        "- writes userdata, boot again",
     ],
     Some(HANDS_OFF),
 );
@@ -227,21 +269,26 @@ pub const SUMMARY: Step = tool(
 );
 
 #[cfg(test)]
-pub const ALL: [&Step; 17] = [
+pub const ALL: [&Step; 22] = [
     &FIND_BUILDS,
     &CHOOSE_UI,
     &CHECK_COMPUTER,
+    &CHECK_RECORD,
     &CONNECT,
     &CHECK_BOOTLOADER,
     &RESTART_TO_ANDROID,
     &CHECK_ADB,
     &FIND_IMAGES,
+    &FIND_NURA,
     &CONFIRM,
     &BACKUP,
     &TO_FASTBOOT,
     &CHECK_FASTBOOT,
+    &CHECK_FASTBOOT_RECORDED,
     &APPROVE_INSTALL,
     &INSTALL,
+    &APPROVE_REINSTALL,
+    &REINSTALL,
     &APPROVE_REBOOT,
     &REBOOT,
     &SUMMARY,
@@ -296,8 +343,8 @@ mod tests {
     #[test]
     fn a_step_block_aligns_its_labels_and_hangs_continuations() {
         assert_eq!(
-            block(&APPROVE_INSTALL),
-            ["  After this: - erases Android and all its data"]
+            block(&APPROVE_REINSTALL),
+            ["  After this: - erases Nura and all its data, installs it again",]
         );
         assert_eq!(
             block(&INSTALL),
@@ -328,10 +375,11 @@ mod tests {
 
     #[test]
     fn every_point_of_no_return_is_a_you_step_with_the_marker_and_an_after_line() {
-        let step = &APPROVE_INSTALL;
-        assert!(step.no_return && step.actor == Actor::You, "{}", step.title);
-        assert!(header(8, 14, step).ends_with("POINT OF NO RETURN"));
-        assert!(block(step).iter().any(|l| l.starts_with("  After this: ")));
+        for step in [&APPROVE_INSTALL, &APPROVE_REINSTALL] {
+            assert!(step.no_return && step.actor == Actor::You, "{}", step.title);
+            assert!(header(8, 14, step).ends_with("POINT OF NO RETURN"));
+            assert!(block(step).iter().any(|l| l.starts_with("  After this: ")));
+        }
     }
 
     #[test]
@@ -341,7 +389,7 @@ mod tests {
             .filter(|s| s.no_return)
             .map(|s| s.title)
             .collect();
-        assert_eq!(marked, ["Approve the install"]);
+        assert_eq!(marked, ["Approve the install", "Approve the reinstall"]);
         assert_eq!(
             header(1, 14, &CHECK_COMPUTER),
             "== Step 1 of 14 · TOOL: Check this computer"
