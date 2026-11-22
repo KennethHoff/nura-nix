@@ -9,6 +9,7 @@ root=$(mktemp -d)
 bash_bin=$(command -v bash)
 export LOG=$root/fastboot.log ADB_LOG=$root/adb.log FLASHED=$root/flashed COUNT=$root/devices-count
 export STATE_LOG=$root/state.log SIG_LOG=$root/sig.log CURL_LOG=$root/curl.log PCOUNT=$root/product-count
+export UNLOCKED_FLAG=$root/fb-unlocked CRITICAL_FLAG=$root/fb-critical
 export HCOUNT=$root/psize-count SSH_LOG=$root/ssh.log SSH_ENV_LOG=$root/ssh-env.log ADB_COUNT=$root/adb-count PARTS=$root/phoneparts NC_PID=$root/nc.pid SSHD_STOPPED=$root/sshd-stopped WROTE=$root/wrote ADB_BACK=$root/adb-back
 cache=$root/cache
 export STATE_FILE=$cache/phones/ABC123/state.json
@@ -119,6 +120,7 @@ fi
 shift
 case "$*" in
   "getprop ro.serialno") echo "${FAKE_ADB_SERIAL:-ABC123}" | crlf ;;
+  "getprop sys.oem_unlock_allowed") if [ "${FAKE_OEM:-1}" = none ]; then echo; else echo "${FAKE_OEM:-1}" | crlf; fi ;;
   "getprop ro.boot.slot_suffix") echo "${FAKE_SUFFIX:-_a}" | crlf ;;
   "dumpsys account")
     if [ "${FAKE_DUMPSYS_BAD:-}" = 1 ]; then echo "Accounts changed their format"; exit 0; fi
@@ -161,6 +163,10 @@ EOS
 #   FAKE_FAIL=<partition>  that write fails;  FAKE_HANG=<partition>  that write never returns
 #   FAKE_AFTER_SNAPSHOT, FAKE_AFTER_BATTERY, FAKE_AFTER_UNLOCKED  those getvar answers once any write ran
 #   FAKE_SIG_ON=<partition>  that write records its signal mask and sends SIGINT to nura-install
+#   FAKE_LOCKED=1  the bootloader says `unlocked:no` until `flashing unlock` ran (the flag file outlives a run: phone_locked resets it)
+#   FAKE_NOCONFIRM=<unlock|unlock_critical>:<never|declined>  the owner never confirms on the phone (the command hangs) or declines (FAILED)
+#   FAKE_INTERRUPT_AFTER=<unlock|unlock_critical>  that command succeeds, then nura-install is sent SIGINT
+#   (FAKE_FAIL, FAKE_FAIL0 and FAKE_HANG also take `unlock` and `unlock_critical` as the partition)
 cat > "$root/bin/fastboot" <<'EOS'
 [ "$1" = --version ] && { echo "fastboot version fake"; exit 0; }
 echo "$*" >> "$LOG"
@@ -191,6 +197,7 @@ effective() {
   local after=
   [ ! -e "$WROTE" ] || after=1
   local unl=${FAKE_UNLOCKED:-yes} bat=${FAKE_FB_BATTERY:-yes} snap=${FAKE_SNAPSHOT:-none}
+  if [ "${FAKE_LOCKED:-}" = 1 ]; then if [ -e "$UNLOCKED_FLAG" ]; then unl=yes; else unl=no; fi; fi
   if [ -n "$after" ]; then unl=${FAKE_AFTER_UNLOCKED:-$unl}; bat=${FAKE_AFTER_BATTERY:-$bat}; snap=${FAKE_AFTER_SNAPSHOT:-$snap}; fi
   local n=${FAKE_PSIZE_FLIP_NAME:-boot_a} drop=@none@
   [ -z "${FAKE_PSIZE_FLIP:-}" ] || [ "$(cat "$HCOUNT" 2> /dev/null || echo 0)" -lt "$FAKE_PSIZE_FLIP" ] || drop=$n
@@ -253,6 +260,18 @@ case "$1" in
       echo "Finished. Total time: 0.001s" >&2
       [ "${FAKE_GETVAR_FAIL:-}" != "$2" ] || exit 1
     fi ;;
+  flashing)
+    case "$2" in
+      unlock | unlock_critical) ;;
+      *) echo "fake fastboot: refusing flashing $2" >&2; exit 1 ;;
+    esac
+    case "${FAKE_NOCONFIRM:-}" in
+      "$2:never") touch "$WROTE"; exec sleep 60 ;;
+      "$2:declined") echo "FAILED (remote: 'the owner declined on the phone')" >&2; exit 1 ;;
+    esac
+    write flashing "$2"
+    if [ "$2" = unlock ]; then touch "$UNLOCKED_FLAG"; else touch "$CRITICAL_FLAG"; fi
+    [ "${FAKE_INTERRUPT_AFTER:-}" != "$2" ] || { kill -INT "$PPID"; sleep "${FAKE_SIG_SLEEP:-0}"; } ;;
   flash) write flash "$2"; cp "$3" "$FLASHED/$2" ;;
   erase) write erase "$2" ;;
   reboot) write reboot "" ;;
@@ -453,7 +472,9 @@ gate_precedes_its_write() { # name, file
     prev ~ /^YOU: Approve the install$/ && $0 != "TOOL: Install Nura" { bad = 1 }
     prev ~ /^YOU: Approve the reinstall$/ && $0 != "TOOL: Reinstall Nura" { bad = 1 }
     prev ~ /^YOU: Approve the reboot$/ && $0 != "TOOL: Restart the phone" { bad = 1 }
-    /^TOOL: (Install Nura|Reinstall Nura|Restart the phone)$/ && prev !~ /^YOU: Approve the / { bad = 1 }
+    prev ~ /^YOU: Approve the unlock$/ && $0 != "TOOL: Unlock the bootloader" { bad = 1 }
+    prev ~ /^YOU: Approve the critical unlock$/ && $0 != "TOOL: Unlock the critical partitions" { bad = 1 }
+    /^TOOL: (Install Nura|Reinstall Nura|Restart the phone|Unlock the bootloader|Unlock the critical partitions)$/ && prev !~ /^YOU: Approve the / { bad = 1 }
     { prev = $0 }
     END { exit bad }' || fail "$1: a gate's YOU step does not directly precede the TOOL step that writes"
 }
@@ -864,12 +885,12 @@ grep -q 'Step 8 of 19 .*Find, download and verify the images' "$root/out" || fai
 make_index
 # The bootloader is read first, before any download or backup: every wrong answer is reported at once, then the run stops.
 fresh_cache
-FAKE_PSIZE_MISSING=boot_a FAKE_UNLOCKED=no FAKE_FB_BATTERY=no FAKE_FB_AFTER=1 run "$fresh_in"
+FAKE_PSIZE_MISSING=boot_a FAKE_FB_BATTERY=no FAKE_FB_AFTER=1 run "$fresh_in"
 [ "$rc" = 1 ] || fail "a wrong bootloader exited $rc"
-for m in 'no value for `getvar partition-size:boot_a`' 'unlocked: no' 'battery-soc-ok: no'; do
+for m in 'no value for `getvar partition-size:boot_a`' 'battery-soc-ok: no'; do
   grep -qF -- "$m" "$root/out" || fail "the early bootloader check did not report: $m"
 done
-grep -q '^Not ready: 3 checks failed' "$root/out" || fail "wrong count after the bootloader check: $(grep '^Not ready' "$root/out")"
+grep -q '^Not ready: 2 checks failed' "$root/out" || fail "wrong count after the bootloader check: $(grep '^Not ready' "$root/out")"
 ! grep -q 'Restart into Android' "$root/out" || fail "the owner was sent back to Android after a failed bootloader check"
 [ ! -e "$cache/downloads" ] || fail "something was downloaded before the bootloader was checked"
 no_backup "a failed bootloader check"
@@ -947,6 +968,150 @@ fresh_cache
 FAKE_FB_SERIAL=XYZ789 FAKE_FB_AFTER=1 run "$fresh_in"
 refused "wrong serial after the adb phase" 'is XYZ789, not ABC123'
 [ ! -e "$cache/phones" ] || fail "wrong serial wrote a record"
+
+## Unlocking a locked bootloader: after the backup, each command behind its own approval
+
+phone_locked() { rm -f "$UNLOCKED_FLAG" "$CRITICAL_FLAG"; }
+unlock_in="${confirmations}unlock bootloader\nunlock critical\ninstall nura\nreboot\n"
+unlocks() { grep -E 'flashing' "$LOG" || true; }
+# A locked phone: the Preflight takes it, the unlock runs after the backup, the install goes on from fastboot.
+fresh_cache
+phone_locked
+FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "$unlock_in"
+[ "$rc" = 0 ] || fail "a locked phone's run exited $rc"
+[ "$(unlocks)" = "-s ABC123 flashing unlock
+-s ABC123 flashing unlock_critical" ] || fail "the unlock ran: $(unlocks)"
+[ "$(writes | sed 's/^-s ABC123 //' | tr '\n' '|')" = "flashing unlock|flashing unlock_critical|erase dtbo|erase vendor_boot|flash userdata $nura_raw/nura-rootfs.img|flash boot $nura_raw/nura-boot.img|reboot|" ] \
+  || fail "the writes were out of order: $(writes)"
+[ "$(tr '\n' '|' < "$STATE_LOG" | sed 's/|$//')" = "flashing unlock under unlock-in-progress|flashing unlock_critical under unlock-in-progress|erase dtbo under nura-in-progress|erase vendor_boot under nura-in-progress|flash userdata under nura-in-progress|flash boot under nura-in-progress|reboot  under nura-installed" ] \
+  || fail "the unlock ran outside its record: $(cat "$STATE_LOG")"
+[ "$(state)" = nura-installed ] || fail "state after the unlock and install is $(state)"
+case $(jq -r .backup "$STATE_FILE") in "$cache"/backups/ABC123/backup-*) ;; *) fail "the backup path was lost: $(jq -r .backup "$STATE_FILE")" ;; esac
+grep -q 'getprop sys.oem_unlock_allowed' "$ADB_LOG" || fail "OEM unlocking was not read over adb"
+grep -q 'OEM unlocking: on' "$root/out" || fail "the OEM unlocking answer is not shown"
+cp "$root/out" "$root/out.unlock"
+step_blocks "unlock" "$root/out.unlock"
+gate_precedes_its_write "unlock" "$root/out.unlock"
+plain_output "unlock" "$root/out.unlock"
+order=$(grep -E '^== Step ' "$root/out.unlock" | sed -E 's/^== Step [0-9]+ of [0-9]+ · (YOU|TOOL): //; s/ +POINT OF NO RETURN$//' | tr '\n' '|')
+[ "$order" = "Check this computer|Check the phone over adb|Put the phone in fastboot|Check the bootloader|Find Nura's builds for the phone|Choose Nura's interface|Restart into Android|Find, download and verify the images|Confirm what is lost|Back up the phone|Turn on OEM unlocking|Put the phone in fastboot|Check the bootloader is locked|Approve the unlock|Unlock the bootloader|Put the phone in fastboot|Check the bootloader is unlocked|Approve the critical unlock|Unlock the critical partitions|Put the phone in fastboot|Check the phone in fastboot|Approve the install|Install Nura|Approve the reboot|Restart the phone|Start sshd on Nura|Copy the per-phone partitions|Summarize|" ] \
+  || fail "the locked run's steps are out of order: $order"
+[ "$(grep -c '^== Step ' "$root/out.unlock")" = 28 ] || fail "a locked run is not 28 steps"
+[ "$(sections_of "$root/out.unlock" | grep -o '\[[^]]*\]' | tr '\n' ' ')" = "[Preflight] [Prepare] [Unlock the bootloader] [Install] [Finish] " ] || fail "sections of a locked run: $(sections_of "$root/out.unlock")"
+grep -q '^== Step 14 of 28 · YOU: Approve the unlock  *POINT OF NO RETURN$' "$root/out.unlock" || fail "the unlock approval is not the marked point of no return"
+grep -q 'press a Volume button to move to `Unlock the bootloader`, then press Power' "$root/out.unlock" || fail "the buttons were not named"
+grep -q 'choice: unlock bootloader' "$cache/logs/"* && grep -q 'choice: unlock critical' "$cache/logs/"* || fail "the transcript lacks the unlock approvals"
+# No Android after the wipe: the adb phone is read only before the first unlock.
+[ "$(grep -c 'Check the phone over adb' "$root/out.unlock")" = 1 ] || fail "adb was used again after the unlock"
+! grep -q 'reboot' "$ADB_LOG" || fail "adb rebooted the phone"
+
+# OEM unlocking off: stop after the backup, before fastboot is used for the unlock.
+fresh_cache
+phone_locked
+FAKE_OEM=0 FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "$unlock_in"
+refused "OEM unlocking off" 'says OEM unlocking is off'
+[ -z "$(unlocks)" ] || fail "an unlock ran with OEM unlocking off"
+[ -d "$cache"/backups/ABC123/backup-* ] || fail "the backup was not taken before the OEM check"
+[ ! -e "$cache/phones" ] || fail "OEM unlocking off wrote a record"
+# ... a phone that does not report it asks the owner instead, and Stop there writes nothing.
+fresh_cache
+phone_locked
+FAKE_OEM=none FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "${confirmations}oem unlocking\nunlock bootloader\nunlock critical\ninstall nura\nreboot\n"
+[ "$rc" = 0 ] || fail "an unreported OEM property with a confirmation exited $rc"
+grep -q 'does not report OEM unlocking' "$root/out" || fail "the unreported property was not said"
+fresh_cache
+phone_locked
+FAKE_OEM=none FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "${confirmations}stop\n"
+refused "OEM unlocking unconfirmed" 'stopped'
+[ ! -e "$cache/phones" ] || fail "an unconfirmed OEM unlocking wrote a record"
+
+# Stop at the first approval: nothing is written, no record.
+fresh_cache
+phone_locked
+FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "${confirmations}stop\n"
+refused "Stop at the unlock approval" 'stopped at the `unlock bootloader` gate'
+[ ! -e "$cache/phones" ] || fail "Stop at the unlock approval wrote a record"
+[ ! -e "$UNLOCKED_FLAG" ] || fail "Stop at the unlock approval unlocked the phone"
+# ... and at the second: the first unlock stays, nothing more is written, the record says where it is.
+fresh_cache
+phone_locked
+FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "${confirmations}unlock bootloader\nstop\n"
+[ "$rc" = 1 ] || fail "Stop at the critical approval exited $rc"
+grep -q 'stopped at the `unlock critical` gate' "$root/out" || fail "Stop at the critical approval not reported"
+[ "$(unlocks)" = "-s ABC123 flashing unlock" ] || fail "Stop at the critical approval ran: $(unlocks)"
+! grep -Eq 'erase|flash (userdata|boot)|reboot' "$LOG" || fail "Stop at the critical approval wrote the install"
+[ "$(state)" = unlock-in-progress ] || fail "Stop at the critical approval left $(state)"
+[ "$(jq -r .backup "$STATE_FILE")" != "no backup taken" ] || fail "the record lost the backup path"
+# ... a rerun from fastboot resumes at the critical unlock, with no second unlock command.
+FAKE_LOCKED=1 run "${choice}unlock critical\ninstall nura\nreboot\n"
+[ "$rc" = 0 ] || fail "the resumed run exited $rc"
+[ "$(unlocks)" = "-s ABC123 flashing unlock_critical" ] || fail "the resumed run unlocked again: $(unlocks)"
+grep -q 'The bootloader unlock is half done' "$root/out" || fail "the resumed run did not say where it was"
+[ "$(state)" = nura-installed ] || fail "the resumed run left $(state)"
+case $(jq -r .backup "$STATE_FILE") in "$cache"/backups/ABC123/backup-*) ;; *) fail "the resume lost the backup path" ;; esac
+
+# The owner never confirms on the phone: the command is stopped, the phone is still locked, the record says so.
+fresh_cache
+phone_locked
+FAKE_NOCONFIRM=unlock:never NURA_INSTALL_WRITE_TIMEOUT_SECONDS=2 FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "$unlock_in"
+[ "$rc" = 1 ] || fail "an unconfirmed unlock exited $rc"
+grep -q 'did not finish within 2 seconds and was killed' "$root/out" || fail "the unconfirmed unlock was not reported"
+[ "$(state)" = unlock-in-progress ] || fail "an unconfirmed unlock left $(state)"
+! grep -q 'unlock_critical' "$LOG" || fail "the critical unlock ran after an unconfirmed unlock"
+# ... rerun: still locked, so it resumes at the first unlock.
+FAKE_LOCKED=1 run "${choice}unlock bootloader\nunlock critical\ninstall nura\nreboot\n"
+[ "$rc" = 0 ] || fail "the rerun after an unconfirmed unlock exited $rc"
+[ "$(unlocks)" = "-s ABC123 flashing unlock
+-s ABC123 flashing unlock_critical" ] || fail "the rerun unlocked: $(unlocks)"
+[ "$(state)" = nura-installed ] || fail "the rerun left $(state)"
+# The owner declines on the phone, or fastboot prints FAILED and exits 0: the step fails and the record stays.
+for mode in "FAKE_NOCONFIRM=unlock:declined" "FAKE_FAIL0=unlock" "FAKE_FAIL=unlock"; do
+  fresh_cache
+  phone_locked
+  export "$mode"
+  FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "$unlock_in"
+  unset "${mode%%=*}"
+  [ "$rc" = 1 ] || fail "$mode exited $rc"
+  grep -q 'FAILED\|boom' "$root/out" || fail "$mode: no failure shown: $(tail -5 "$root/out")"
+  [ "$(state)" = unlock-in-progress ] || fail "$mode left $(state)"
+  [ ! -e "$UNLOCKED_FLAG" ] || [ "$mode" = FAKE_FAIL0=unlock ] || fail "$mode unlocked the phone"
+  ! grep -q 'unlock_critical' "$LOG" || fail "$mode went on to the critical unlock"
+  ! grep -Eq 'erase|flash (userdata|boot)|reboot' "$LOG" || fail "$mode wrote the install"
+done
+# A FAILED critical unlock leaves the record at unlock-in-progress, not unlocked.
+fresh_cache
+phone_locked
+FAKE_FAIL0=unlock_critical FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "$unlock_in"
+[ "$rc" = 1 ] || fail "a FAILED critical unlock exited $rc"
+[ "$(state)" = unlock-in-progress ] || fail "a FAILED critical unlock left $(state)"
+! grep -Eq 'erase|flash (userdata|boot)|reboot' "$LOG" || fail "a FAILED critical unlock went on to the install"
+# Interrupted between the two commands: the record keeps the place, the rerun does only what is left.
+fresh_cache
+phone_locked
+FAKE_INTERRUPT_AFTER=unlock FAKE_SIG_SLEEP=1 FAKE_LOCKED=1 FAKE_FB_AFTER=1 run "$unlock_in"
+[ "$rc" = 1 ] || fail "an interruption after the first unlock exited $rc"
+grep -q 'interrupted while writing' "$root/out" || fail "no interruption report"
+[ "$(state)" = unlock-in-progress ] || fail "an interruption left $(state)"
+! grep -q 'unlock_critical' "$LOG" || fail "the critical unlock ran after the interruption"
+backup_then=$(jq -r .backup "$STATE_FILE")
+FAKE_LOCKED=1 run "${choice}unlock critical\ninstall nura\nreboot\n"
+[ "$rc" = 0 ] || fail "the run after the interruption exited $rc"
+[ "$(unlocks)" = "-s ABC123 flashing unlock_critical" ] || fail "the resume after the interruption ran: $(unlocks)"
+[ "$(jq -r .backup "$STATE_FILE")" = "$backup_then" ] || fail "the backup path changed on the resume"
+# A phone recorded as unlocked goes straight to the install.
+set_record unlocked
+FAKE_LOCKED=1 run "$install_in"
+[ "$rc" = 0 ] || fail "an unlocked-state run exited $rc"
+[ -z "$(unlocks)" ] || fail "an unlocked-state run unlocked again: $(unlocks)"
+[ "$(state)" = nura-installed ] || fail "an unlocked-state run left $(state)"
+# A locked phone is still refused for everything but the unlock: a record that says installed needs it unlocked,
+# and the lock commands are refused whatever asks (see the allowlist's unit tests).
+set_record nura-installed
+phone_locked
+FAKE_LOCKED=1 run "$reinstall_in"
+refused "a locked phone being reinstalled" 'unlocked: no'
+! grep -q 'lock' <(sed 's/unlock//g; s/unlocked//g; s/Unlock//g' "$LOG") || fail "a lock command reached fastboot"
+phone_locked
 
 ## Gates
 

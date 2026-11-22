@@ -354,7 +354,12 @@ pub fn images(r: &mut Report, nura_build: &Build, cache: &Path) -> Option<Found>
 
 /// The bootloader's answers as checks of the report: `getvar all` once, then every variable the run
 /// needs; all failures are reported together. Gives the answers when every check passed.
-pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) -> Option<fastboot::Source> {
+pub fn fastboot_side(
+    r: &mut Report,
+    serial: &Serial,
+    slot: Slot,
+    lock: fastboot::Lock,
+) -> Option<fastboot::Source> {
     let src = r.check("getvar all", FIX_VAR, || {
         let src = fastboot::read_all(serial)?;
         let shown = match &src {
@@ -364,7 +369,7 @@ pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) -> Option<fast
         Ok((src, shown))
     })?;
     let mut all_passed = true;
-    for c in fastboot::checks(serial, slot, &src) {
+    for c in fastboot::checks(serial, slot, &src, lock) {
         all_passed &= r
             .check(&c.label, FIX_VAR, || {
                 let shown = (c.run)()?;

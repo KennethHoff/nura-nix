@@ -484,6 +484,11 @@ pub fn plan(total: u32) {
     c.total = total;
 }
 
+/// Adds steps the run learned it needs (the unlock, once the bootloader says it is locked).
+pub fn more_steps(n: u32) {
+    lock().total += n;
+}
+
 pub fn step(step: &'static steps::Step) {
     let mut c = lock();
     end_phase(&mut c);

@@ -4,7 +4,7 @@ use crate::adb;
 use crate::fail::{Fail, Result};
 use crate::fastboot;
 use crate::phone::Serial;
-use crate::state::{self, Record};
+use crate::state::{self, Record, State};
 use std::path::Path;
 
 pub enum Route {
@@ -25,8 +25,12 @@ fn by_state(serial: Serial, record: Record, in_fastboot: bool) -> Result<Route> 
     if in_fastboot {
         return Ok(Route::Nura { serial, record });
     }
+    let next = match record.state {
+        State::UnlockInProgress | State::Unlocked => "To continue",
+        State::NuraInProgress | State::NuraInstalled => "To install Nura again",
+    };
     nothing(&format!(
-        "phone {serial} is `{}`. To install Nura again, power it off, hold Volume Down + Power and run `nura-install` from fastboot.",
+        "phone {serial} is `{}`. {next}, power it off, hold Volume Down + Power and run `nura-install` from fastboot.",
         record.state.name()
     ))
 }

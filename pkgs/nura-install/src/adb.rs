@@ -93,6 +93,28 @@ pub fn getprop(serial: &Serial, name: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+/// The property Android's PersistentDataBlockService sets to `1` while OEM unlocking is on and `0`
+/// while it is off (AOSP, `OEM_UNLOCK_PROP`).
+pub const OEM_UNLOCK_PROP: &str = "sys.oem_unlock_allowed";
+
+/// `Some(on)` for `1` or `0`; `None` for anything else, an unset property included.
+pub fn parse_oem_unlocking(text: &str) -> Option<bool> {
+    match text.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether the phone says OEM unlocking is on; `None` when it does not say.
+pub fn oem_unlocking(serial: &Serial) -> Result<Option<bool>> {
+    let out = capture(adb_on(serial).args(["shell", "getprop", OEM_UNLOCK_PROP]))?;
+    if !out.ok() {
+        return Err(format!("`getprop {OEM_UNLOCK_PROP}` failed over adb").into());
+    }
+    Ok(parse_oem_unlocking(&out.stdout))
+}
+
 pub fn shell(serial: &Serial, command: &str) -> Result<String> {
     stdout_of(adb_on(serial).args(["shell", command]))
 }
@@ -454,6 +476,15 @@ pub fn confirm_losses() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oem_unlocking_reads_one_and_zero_and_nothing_else() {
+        assert_eq!(parse_oem_unlocking("1\r\n"), Some(true));
+        assert_eq!(parse_oem_unlocking("0\n"), Some(false));
+        for other in ["", "\n", "2", "true", "unlocked"] {
+            assert_eq!(parse_oem_unlocking(other), None, "{other:?}");
+        }
+    }
 
     #[test]
     fn the_tar_stream_length_is_headers_padded_data_long_names_and_the_end_blocks() {

@@ -10,6 +10,10 @@ use std::process::Command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
+    /// The bootloader unlock was started: the backup is taken, the phone may or may not be unlocked yet.
+    UnlockInProgress,
+    /// Unlocked and critical-unlocked, Nura not yet written.
+    Unlocked,
     NuraInProgress,
     NuraInstalled,
 }
@@ -17,15 +21,22 @@ pub enum State {
 impl State {
     pub fn name(self) -> &'static str {
         match self {
+            State::UnlockInProgress => "unlock-in-progress",
+            State::Unlocked => "unlocked",
             State::NuraInProgress => "nura-in-progress",
             State::NuraInstalled => "nura-installed",
         }
     }
 
     fn parse(s: &str) -> Option<Self> {
-        [State::NuraInProgress, State::NuraInstalled]
-            .into_iter()
-            .find(|state| state.name() == s)
+        [
+            State::UnlockInProgress,
+            State::Unlocked,
+            State::NuraInProgress,
+            State::NuraInstalled,
+        ]
+        .into_iter()
+        .find(|state| state.name() == s)
     }
 }
 
@@ -320,6 +331,19 @@ mod tests {
             &installed.with_state(State::NuraInProgress),
             false
         ));
+    }
+
+    #[test]
+    fn the_unlock_states_round_trip_with_the_backup_path_kept() {
+        for state in [State::UnlockInProgress, State::Unlocked] {
+            let (cache, serial) = cache_with(&render(&record().with_state(state)));
+            let back = read(&cache, &serial).unwrap().unwrap();
+            assert_eq!(back.state, state);
+            assert_eq!(back.backup, "/x\"y");
+            fs::remove_dir_all(cache).unwrap();
+        }
+        assert_eq!(State::UnlockInProgress.name(), "unlock-in-progress");
+        assert!(!copy_only(&record().with_state(State::Unlocked), false));
     }
 
     #[test]

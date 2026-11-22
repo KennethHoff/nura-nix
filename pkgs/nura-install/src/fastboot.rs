@@ -224,6 +224,39 @@ fn expect(src: &Source, serial: &Serial, name: &str, want: &str) -> Result<Strin
     }
 }
 
+/// What the checks demand of the bootloader's lock: the install needs it unlocked, the unlock needs it
+/// locked first, and the Preflight (before the unlock) takes either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lock {
+    Unlocked,
+    Locked,
+    Either,
+}
+
+fn expect_lock(src: &Source, serial: &Serial, lock: Lock) -> Result<String> {
+    match lock {
+        Lock::Unlocked => expect(src, serial, "unlocked", "yes"),
+        Lock::Locked => expect(src, serial, "unlocked", "no"),
+        Lock::Either => {
+            let got = src.ask(serial, "unlocked")?;
+            if got == "yes" || got == "no" {
+                checked("unlocked", &got);
+                Ok(got)
+            } else {
+                Err(format!(
+                    "the phone reports `unlocked: {got}`, neither yes nor no; nothing was written"
+                )
+                .into())
+            }
+        }
+    }
+}
+
+/// True when the bootloader says `unlocked: yes`; anything but yes or no is an error.
+pub fn is_unlocked(src: &Source, serial: &Serial) -> Result<bool> {
+    Ok(expect_lock(src, serial, Lock::Either)? == "yes")
+}
+
 fn expect_slot(src: &Source, serial: &Serial, recorded: Slot) -> Result<String> {
     let got = src.ask(serial, "current-slot")?;
     if got == recorded.as_str() {
@@ -314,7 +347,7 @@ fn check<'a>(label: &str, run: impl FnOnce() -> Result<String> + 'a) -> Check<'a
 }
 
 /// Every fastboot check, in the order they run, answered from `src`.
-pub fn checks<'a>(serial: &'a Serial, slot: Slot, src: &'a Source) -> Vec<Check<'a>> {
+pub fn checks<'a>(serial: &'a Serial, slot: Slot, src: &'a Source, lock: Lock) -> Vec<Check<'a>> {
     let mut all = vec![
         check("serial", move || {
             one_serial(serial)?;
@@ -325,7 +358,7 @@ pub fn checks<'a>(serial: &'a Serial, slot: Slot, src: &'a Source) -> Vec<Check<
         check("is-userspace", move || {
             expect(src, serial, "is-userspace", "no")
         }),
-        check("unlocked", move || expect(src, serial, "unlocked", "yes")),
+        check("unlocked", move || expect_lock(src, serial, lock)),
         check("current-slot", move || expect_slot(src, serial, slot)),
         check("slot-count", move || expect(src, serial, "slot-count", "2")),
         check("battery-soc-ok", move || {
@@ -354,7 +387,7 @@ pub fn checks<'a>(serial: &'a Serial, slot: Slot, src: &'a Source) -> Vec<Check<
 
 /// Every fastboot check, stopping at the first that fails; run before the first gate and again after each.
 pub fn check_phone(serial: &Serial, slot: Slot) -> Result<()> {
-    for c in checks(serial, slot, &Source::Live) {
+    for c in checks(serial, slot, &Source::Live, Lock::Unlocked) {
         ui::run(Job::new(&c.label), || Ok(((), (c.run)()?)))?;
     }
     Ok(())
@@ -369,9 +402,10 @@ const IDENTITY: [&str; 4] = [
 ];
 
 /// Only the identity checks: after the writes, answers such as the battery or the snapshot status may
-/// legitimately differ, but the phone must still be this one, in bootloader mode, unlocked, on its slot.
-pub fn check_identity(serial: &Serial, slot: Slot) -> Result<()> {
-    for c in checks(serial, slot, &Source::Live) {
+/// legitimately differ, but the phone must still be this one, in bootloader mode, on its slot, with
+/// the lock `lock` (unlocked, except around the unlock itself).
+pub fn check_identity(serial: &Serial, slot: Slot, lock: Lock) -> Result<()> {
+    for c in checks(serial, slot, &Source::Live, lock) {
         if IDENTITY.contains(&c.label.as_str()) {
             ui::run(Job::new(&c.label), || Ok(((), (c.run)()?)))?;
         }
@@ -382,6 +416,27 @@ pub fn check_identity(serial: &Serial, slot: Slot) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vars(unlocked: &str) -> Source {
+        Source::All(Vars::parse(&format!("(bootloader) unlocked:{unlocked}\n")))
+    }
+
+    #[test]
+    fn the_lock_check_takes_exactly_what_the_step_demands() {
+        let s = Serial::new("S1").unwrap();
+        for (lock, yes, no) in [
+            (Lock::Unlocked, true, false),
+            (Lock::Locked, false, true),
+            (Lock::Either, true, true),
+        ] {
+            assert_eq!(expect_lock(&vars("yes"), &s, lock).is_ok(), yes, "{lock:?}");
+            assert_eq!(expect_lock(&vars("no"), &s, lock).is_ok(), no, "{lock:?}");
+            assert!(expect_lock(&vars("maybe"), &s, lock).is_err(), "{lock:?}");
+        }
+        assert!(is_unlocked(&vars("yes"), &s).unwrap());
+        assert!(!is_unlocked(&vars("no"), &s).unwrap());
+        assert!(is_unlocked(&vars("maybe"), &s).is_err());
+    }
 
     #[test]
     fn an_answer_must_appear_exactly_once() {
@@ -439,7 +494,7 @@ mod tests {
     #[test]
     fn identity_labels_exist_among_the_checks() {
         let serial = Serial::new("ABC123").unwrap();
-        let labels: Vec<String> = checks(&serial, Slot::A, &Source::Live)
+        let labels: Vec<String> = checks(&serial, Slot::A, &Source::Live, Lock::Unlocked)
             .into_iter()
             .map(|c| c.label)
             .collect();

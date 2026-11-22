@@ -116,7 +116,8 @@ pub const CHECK_BOOTLOADER: Step = tool(
         "- reads `getvar all` once",
         "- serial, product, unlocked, slot, update status, battery",
         "- partition sizes",
-        "- reports every missing or wrong answer, then stops",
+        "- `unlocked: no` is not a failure here: the run then unlocks the bootloader first",
+        "- reports every other missing or wrong answer, then stops",
     ],
     Some("unchanged"),
 );
@@ -203,6 +204,78 @@ pub const TO_FASTBOOT: Step = you(
         "[ ] Keep the cable connected",
     ],
     Some("nothing written yet"),
+);
+pub const ENABLE_OEM: Step = you(
+    "Turn on OEM unlocking",
+    "turn on OEM unlocking",
+    Some("about 1 min"),
+    &[
+        "[ ] Settings > System > Developer options: OEM unlocking on (the phone needs internet; it may ask for your PIN)",
+        "[ ] Keep USB debugging on and the cable connected",
+    ],
+    Some(ON_ANDROID),
+);
+pub const TO_FASTBOOT_WIPED: Step = you(
+    "Put the phone in fastboot",
+    "Volume Down + Power",
+    Some("1-3 min"),
+    &[
+        "[ ] Let the phone restart on its own; it was wiped, so don't set it up",
+        "[ ] Hold Power, tap Power off",
+        "[ ] Hold Volume Down + Power until the fastboot screen shows",
+        "[ ] Keep the cable connected",
+    ],
+    Some("wiped by the unlock, nothing else written"),
+);
+pub const CHECK_LOCKED: Step = tool(
+    "Check the bootloader is locked",
+    Some("under 10 s"),
+    &["- reads serial, slot, unlock state (it must say `unlocked: no`)"],
+    Some("unchanged"),
+);
+pub const CHECK_UNLOCKED: Step = tool(
+    "Check the bootloader is unlocked",
+    Some("under 10 s"),
+    &["- reads serial, slot, unlock state (it must say `unlocked: yes`)"],
+    Some("unchanged"),
+);
+pub const APPROVE_UNLOCK: Step = approval(
+    "Approve the unlock",
+    "choose Unlock the bootloader",
+    &[],
+    &[
+        "- erases the phone: Android and all its data (the backup is taken)",
+        "- the phone asks for its own confirmation, then restarts wiped",
+    ],
+);
+pub const UNLOCK: Step = tool(
+    "Unlock the bootloader",
+    Some("1-3 min"),
+    &[
+        "- re-checks the phone (same serial, still locked, same slot)",
+        "- sends `fastboot flashing unlock`",
+        "- waits for the confirmation on the phone",
+    ],
+    Some("asks you to confirm with its buttons, then wipes and restarts"),
+);
+pub const APPROVE_UNLOCK_CRITICAL: Step = approval(
+    "Approve the critical unlock",
+    "choose Unlock the critical partitions",
+    &[],
+    &[
+        "- erases the phone a second time",
+        "- the phone asks for its own confirmation, then restarts wiped",
+    ],
+);
+pub const UNLOCK_CRITICAL: Step = tool(
+    "Unlock the critical partitions",
+    Some("1-3 min"),
+    &[
+        "- re-checks the phone (same serial, unlocked, same slot)",
+        "- sends `fastboot flashing unlock_critical`",
+        "- waits for the confirmation on the phone",
+    ],
+    Some("asks you to confirm with its buttons, then wipes and restarts"),
 );
 pub const CHECK_FASTBOOT: Step = tool(
     "Check the phone in fastboot",
@@ -291,7 +364,7 @@ pub const SUMMARY: Step = tool(
 );
 
 #[cfg(test)]
-pub const ALL: [&Step; 24] = [
+pub const ALL: [&Step; 32] = [
     &FIND_BUILDS,
     &CHOOSE_UI,
     &CHECK_COMPUTER,
@@ -316,6 +389,14 @@ pub const ALL: [&Step; 24] = [
     &START_SSHD,
     &COPY,
     &SUMMARY,
+    &ENABLE_OEM,
+    &TO_FASTBOOT_WIPED,
+    &CHECK_LOCKED,
+    &CHECK_UNLOCKED,
+    &APPROVE_UNLOCK,
+    &UNLOCK,
+    &APPROVE_UNLOCK_CRITICAL,
+    &UNLOCK_CRITICAL,
 ];
 
 const LABEL: usize = 12;
@@ -399,7 +480,12 @@ mod tests {
 
     #[test]
     fn every_point_of_no_return_is_a_you_step_with_the_marker_and_an_after_line() {
-        for step in [&APPROVE_INSTALL, &APPROVE_REINSTALL] {
+        for step in [
+            &APPROVE_INSTALL,
+            &APPROVE_REINSTALL,
+            &APPROVE_UNLOCK,
+            &APPROVE_UNLOCK_CRITICAL,
+        ] {
             assert!(step.no_return && step.actor == Actor::You, "{}", step.title);
             assert!(header(8, 14, step).ends_with("POINT OF NO RETURN"));
             assert!(block(step).iter().any(|l| l.starts_with("  After this: ")));
@@ -413,7 +499,15 @@ mod tests {
             .filter(|s| s.no_return)
             .map(|s| s.title)
             .collect();
-        assert_eq!(marked, ["Approve the install", "Approve the reinstall"]);
+        assert_eq!(
+            marked,
+            [
+                "Approve the install",
+                "Approve the reinstall",
+                "Approve the unlock",
+                "Approve the critical unlock"
+            ]
+        );
         assert_eq!(
             header(1, 14, &CHECK_COMPUTER),
             "== Step 1 of 14 · TOOL: Check this computer"

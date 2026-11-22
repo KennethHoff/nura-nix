@@ -4,7 +4,7 @@
 use crate::cmd::{self, Sink, Spec};
 use crate::config;
 use crate::fail::Result;
-use crate::fastboot::{self, fastboot_cmd};
+use crate::fastboot::{self, fastboot_cmd, Lock};
 use crate::host::checked;
 use crate::images::{NuraImages, Verified};
 use crate::log;
@@ -18,14 +18,17 @@ use crate::ui::{self, Job};
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-/// The only writes this tool may ever run: (verb, partition).
-const ALLOWED: [(&str, &str); 6] = [
+/// The only writes this tool may ever run: (verb, partition). `flashing` takes the unlock commands
+/// of Fairphone's guide; locking (`flashing lock`, `flashing lock_critical`, `oem lock`) is not here.
+const ALLOWED: [(&str, &str); 8] = [
     ("erase", "dtbo"),
     ("erase", "vendor_boot"),
     ("erase", "userdata"),
     ("flash", "userdata"),
     ("flash", "boot"),
     ("reboot", ""),
+    ("flashing", "unlock"),
+    ("flashing", "unlock_critical"),
 ];
 
 pub struct Phone {
@@ -41,6 +44,14 @@ pub enum Origin {
     Recorded,
 }
 
+/// What a group asks of the phone again, after its gate and before its first write.
+#[derive(Clone, Copy)]
+enum Recheck {
+    Full,
+    /// Only who the phone is, with the bootloader lock the group expects.
+    Identity(Lock),
+}
+
 enum After {
     Set(State),
     Keep,
@@ -53,7 +64,9 @@ pub struct Group {
     images: Vec<Verified>,
     erases_nura: bool,
     /// After the writes only the phone's identity can be asked again: erasing changes other answers.
-    identity_only: bool,
+    recheck: Recheck,
+    /// What the owner does on the phone while the command runs; empty when nothing.
+    on_phone: &'static str,
     in_progress: Option<State>,
     after: After,
     unchanged: &'static str,
@@ -89,7 +102,7 @@ fn guard(writes: &[Vec<OsString>]) -> Result<()> {
         let (verb, partition) = (text(0), text(1));
         let shape = match verb {
             "reboot" => args.len() == 1,
-            "erase" => args.len() == 2,
+            "erase" | "flashing" => args.len() == 2,
             "flash" => args.len() == 3,
             _ => false,
         };
@@ -118,7 +131,8 @@ impl Group {
             ],
             images: vec![nura.boot.clone(), nura.rootfs.clone()],
             erases_nura: false,
-            identity_only: false,
+            recheck: Recheck::Full,
+            on_phone: "",
             in_progress: Some(State::NuraInProgress),
             after: After::Set(State::NuraInstalled),
             unchanged: match origin {
@@ -135,8 +149,50 @@ impl Group {
             title: "Reinstall Nura",
             phrase: "reinstall nura",
             erases_nura: true,
-            identity_only: false,
+            recheck: Recheck::Full,
+            on_phone: "",
             ..Group::install(nura, Origin::Recorded)?
+        }
+        .checked()
+    }
+
+    /// The Fairphone (Gen. 6)'s first unlock, from Fairphone's guide: the phone asks for its own
+    /// confirmation, then wipes itself and restarts. The record exists before it runs, since the
+    /// phone is wiped and the backup's place must not be lost.
+    pub fn unlock(origin: Origin) -> Result<Self> {
+        Group {
+            title: "Unlock the bootloader",
+            phrase: "unlock bootloader",
+            writes: vec![words(&["flashing".as_ref(), "unlock".as_ref()])],
+            images: Vec::new(),
+            erases_nura: false,
+            recheck: Recheck::Identity(Lock::Locked),
+            on_phone: UNLOCK_ON_PHONE,
+            in_progress: Some(State::UnlockInProgress),
+            after: After::Keep,
+            unchanged: match origin {
+                Origin::Fresh => "The phone is still locked and Android is unchanged, and there is no record; boot it normally to run again (a new run makes a new backup).",
+                Origin::Recorded => "The record is unchanged.",
+            },
+            failed: "the phone is in fastboot, and whether it is unlocked is read on the next run",
+        }
+        .checked()
+    }
+
+    /// The second unlock, after the first wiped the phone and it is back in fastboot.
+    pub fn unlock_critical() -> Result<Self> {
+        Group {
+            title: "Unlock the critical partitions",
+            phrase: "unlock critical",
+            writes: vec![words(&["flashing".as_ref(), "unlock_critical".as_ref()])],
+            images: Vec::new(),
+            erases_nura: false,
+            recheck: Recheck::Identity(Lock::Unlocked),
+            on_phone: UNLOCK_ON_PHONE,
+            in_progress: None,
+            after: After::Set(State::Unlocked),
+            unchanged: "The bootloader is unlocked, its critical partitions are not yet, and the record says `unlock-in-progress`.",
+            failed: "the phone is in fastboot, and the record still says unlock-in-progress",
         }
         .checked()
     }
@@ -149,7 +205,8 @@ impl Group {
             writes: vec![words(&["reboot".as_ref()])],
             images: Vec::new(),
             erases_nura: false,
-            identity_only: true,
+            recheck: Recheck::Identity(Lock::Unlocked),
+            on_phone: "",
             in_progress: None,
             after: After::Keep,
             unchanged: "All writes are done and the record says `nura-installed`; the phone is still in fastboot. Reboot it with `fastboot -s {serial} reboot`, or run `nura-install` again.",
@@ -159,9 +216,13 @@ impl Group {
     }
 }
 
+/// What the owner does while an unlock waits for the phone's own confirmation.
+const UNLOCK_ON_PHONE: &str = "The phone now asks for its own confirmation. On the phone: press a Volume button to move to `Unlock the bootloader`, then press Power. To cancel, choose the other option. The phone then wipes itself and restarts.";
+
 fn timeout_of(args: &[OsString]) -> Result<std::time::Duration> {
-    let slow =
-        args.first().is_some_and(|v| v == "flash") && args.get(1).is_some_and(|p| p == "userdata");
+    let slow = args.first().is_some_and(|v| v == "flashing")
+        || (args.first().is_some_and(|v| v == "flash")
+            && args.get(1).is_some_and(|p| p == "userdata"));
     config::write_timeout(slow)
 }
 
@@ -205,6 +266,8 @@ fn approval_label(phrase: &str) -> &'static str {
     match phrase {
         "install nura" => "Install Nura (erases Android and all its data)",
         "reinstall nura" => "Reinstall Nura (erases Nura and all its data)",
+        "unlock bootloader" => "Unlock the bootloader (erases the phone)",
+        "unlock critical" => "Unlock the critical partitions (erases the phone)",
         _ => "Reboot the phone (all writes are done)",
     }
 }
@@ -287,10 +350,11 @@ pub fn execute(phone: &Phone, group: Group, applying: &'static Step) -> Result<(
         .into());
     }
     ui::step(applying);
-    if group.identity_only {
-        fastboot::check_identity(&phone.serial, phone.record.slot)?;
-    } else {
-        fastboot::check_phone(&phone.serial, phone.record.slot)?;
+    match group.recheck {
+        Recheck::Identity(lock) => {
+            fastboot::check_identity(&phone.serial, phone.record.slot, lock)?;
+        }
+        Recheck::Full => fastboot::check_phone(&phone.serial, phone.record.slot)?,
     }
     images_fit(&phone.serial, phone.record.slot, &group)?;
     for image in &group.images {
@@ -299,6 +363,9 @@ pub fn execute(phone: &Phone, group: Group, applying: &'static Step) -> Result<(
     }
     if let Some(state) = group.in_progress {
         state::write(&phone.cache, &phone.serial, &phone.record.with_state(state))?;
+    }
+    if !group.on_phone.is_empty() {
+        ui::say(&format!("\n{}", group.on_phone));
     }
     let block = SignalBlock::new()?;
     ui::note_written();
@@ -342,7 +409,8 @@ mod tests {
             writes: vec![args(a)],
             images: Vec::new(),
             erases_nura: false,
-            identity_only: false,
+            recheck: Recheck::Full,
+            on_phone: "",
             in_progress: None,
             after: After::Keep,
             unchanged: "",
@@ -368,7 +436,13 @@ mod tests {
         assert!(bad(&["--set-active=a"]));
         assert!(bad(&["set_active", "a"]));
         assert!(bad(&["flashing", "lock"]));
+        assert!(bad(&["flashing", "lock_critical"]));
         assert!(bad(&["oem", "lock"]));
+        assert!(bad(&["oem", "unlock"]));
+        assert!(bad(&["flashing", "get_unlock_ability"]));
+        assert!(bad(&["flashing", "unlock", "x"]));
+        assert!(bad(&["flashing", "unlock_critical", "x"]));
+        assert!(bad(&["flashing"]));
         assert!(bad(&["reboot", "bootloader"]));
         assert!(bad(&[]));
     }
@@ -393,6 +467,8 @@ mod tests {
         assert!(!bad(&["erase", "userdata"]));
         assert!(!bad(&["flash", "boot", "x"]));
         assert!(!bad(&["reboot"]));
+        assert!(!bad(&["flashing", "unlock"]));
+        assert!(!bad(&["flashing", "unlock_critical"]));
     }
 
     #[test]
@@ -410,5 +486,26 @@ mod tests {
     #[test]
     fn the_reboot_group_passes_its_own_guard() {
         assert!(Group::reboot().is_ok());
+    }
+
+    #[test]
+    fn the_unlock_groups_run_only_their_unlock_command_and_never_a_lock() {
+        for (group, command) in [
+            (Group::unlock(Origin::Fresh).unwrap(), "unlock"),
+            (Group::unlock(Origin::Recorded).unwrap(), "unlock"),
+            (Group::unlock_critical().unwrap(), "unlock_critical"),
+        ] {
+            let shown: Vec<String> = group.writes.iter().map(|w| display_args(w)).collect();
+            assert_eq!(shown, [format!("flashing {command}")]);
+            assert!(group.images.is_empty());
+        }
+    }
+
+    #[test]
+    fn an_unlock_waits_for_the_owner_as_long_as_the_slowest_write() {
+        assert_eq!(
+            timeout_of(&args(&["flashing", "unlock"])).unwrap(),
+            timeout_of(&args(&["flash", "userdata", "x"])).unwrap()
+        );
     }
 }

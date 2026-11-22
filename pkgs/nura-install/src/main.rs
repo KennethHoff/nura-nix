@@ -18,9 +18,11 @@ mod signals;
 mod state;
 mod steps;
 mod ui;
+mod unlock;
 
 use copy::{Taken, Wait};
 use fail::{Fail, Result};
+use fastboot::Lock;
 use group::{execute, Group, Origin, Phone};
 use nura::Offer;
 use phone::Serial;
@@ -30,6 +32,7 @@ use route::Route;
 use state::{CopyRecord, Record, State};
 use std::path::Path;
 use std::process::ExitCode;
+use unlock::Start;
 
 const USAGE: &str = "Usage: nura-install
 
@@ -40,6 +43,9 @@ Takes no arguments: the run follows from the phone's state and its record.
   Nura running, not yet copied    only the copy of the per-phone partitions
   Nura installed, phone in fastboot     reinstall Nura
   Nura half installed, phone in fastboot  finish the install
+  Bootloader unlock half done, phone in fastboot  finish the unlock, then the install
+
+A locked bootloader adds an Unlock the bootloader section after the backup (it erases the phone).
   -h, --help                      this text
 
 Exit codes:
@@ -255,15 +261,20 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     fastboot::wait_for_phone()?;
     ui::step(&steps::CHECK_BOOTLOADER);
     let mut bootloader = Report::new();
-    let early = preflight::fastboot_side(&mut bootloader, &serial, slot);
+    let early = preflight::fastboot_side(&mut bootloader, &serial, slot, Lock::Either);
     ui::step(&steps::FIND_BUILDS);
     let mut finding = Report::new();
     let offers = preflight::builds(&mut finding, cache, &serial, early.as_ref());
     bootloader.conclude("nura-install")?;
     finding.conclude("nura-install")?;
-    let (Some(_), Some(offers)) = (early, offers) else {
+    let (Some(early), Some(offers)) = (early, offers) else {
         return the_run_lost_track();
     };
+    let locked = !fastboot::is_unlocked(&early, &serial)?;
+    if locked {
+        ui::say("  The bootloader is locked: after the backup, this run unlocks it.");
+        ui::more_steps(unlock::FROM_ANDROID);
+    }
     let offer = choose_interface(offers)?;
 
     ui::step(&steps::RESTART_TO_ANDROID);
@@ -289,32 +300,45 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
         ui::say("  skipped: no backup is taken");
         None
     };
-    ui::step(&steps::TO_FASTBOOT);
-    fastboot::wait_for_phone()?;
-    ui::step(&steps::CHECK_FASTBOOT);
-    fastboot::check_phone(&serial, slot)?;
     let Found {
         nura,
         nura_identity,
     } = found;
-    let install = Group::install(&nura, Origin::Fresh)?;
-    group::images_fit(&serial, slot, &install)?;
     let record = Record {
-        state: State::NuraInProgress,
+        state: if locked {
+            State::UnlockInProgress
+        } else {
+            State::NuraInProgress
+        },
         slot,
         backup: backup.map_or_else(|| adb::NO_BACKUP.to_string(), |p| p.display().to_string()),
         nura: nura_identity,
         copy: None,
     };
-    ui::say(&format!(
-        "  all fastboot checks passed (slot {})",
-        record.slot.as_str()
-    ));
     let phone = Phone {
         serial,
         cache: cache.to_path_buf(),
         record,
     };
+    if locked {
+        unlock::run(&phone, Start::Android, Origin::Fresh)?;
+    } else {
+        ui::step(&steps::TO_FASTBOOT);
+    }
+    fastboot::wait_for_phone()?;
+    ui::step(&steps::CHECK_FASTBOOT);
+    fastboot::check_phone(&phone.serial, slot)?;
+    let origin = if locked {
+        Origin::Recorded
+    } else {
+        Origin::Fresh
+    };
+    let install = Group::install(&nura, origin)?;
+    group::images_fit(&phone.serial, slot, &install)?;
+    ui::say(&format!(
+        "  all fastboot checks passed (slot {})",
+        slot.as_str()
+    ));
 
     ui::section("Install");
     ui::step(&steps::APPROVE_INSTALL);
@@ -333,23 +357,40 @@ fn nura_from_fastboot(cache: &Path, serial: Serial, record: Record) -> Result<()
     ui::set_phone(&serial);
     ui::plan(nura_steps(&record));
     ui::section("Preflight");
-    ui::say(if record.state == State::NuraInstalled {
-        "  Nura is installed: this run reinstalls it."
-    } else {
-        "  Nura is half installed: this run finishes the install."
+    ui::say(match record.state {
+        State::NuraInstalled => "  Nura is installed: this run reinstalls it.",
+        State::NuraInProgress => "  Nura is half installed: this run finishes the install.",
+        State::UnlockInProgress => {
+            "  The bootloader unlock is half done: this run finishes it, then installs Nura."
+        }
+        State::Unlocked => "  The bootloader is unlocked: this run installs Nura.",
     });
     ui::step(&steps::CHECK_RECORD);
     let mut report = Report::new();
     preflight::computer(&mut report, cache);
     preflight::record(&mut report, &serial, &record);
     ui::step(&steps::CHECK_FASTBOOT_RECORDED);
-    let src = preflight::fastboot_side(&mut report, &serial, record.slot);
+    let lock = if record.state == State::UnlockInProgress {
+        Lock::Either
+    } else {
+        Lock::Unlocked
+    };
+    let src = preflight::fastboot_side(&mut report, &serial, record.slot, lock);
     ui::step(&steps::FIND_BUILDS);
     let offers = preflight::builds(&mut report, cache, &serial, src.as_ref());
     report.conclude("nura-install")?;
-    let Some(offers) = offers else {
+    let (Some(offers), Some(src)) = (offers, src) else {
         return the_run_lost_track();
     };
+    let unlocking = record.state == State::UnlockInProgress;
+    let unlocked = fastboot::is_unlocked(&src, &serial)?;
+    if unlocking {
+        ui::more_steps(if unlocked {
+            unlock::RESUME_UNLOCKED
+        } else {
+            unlock::RESUME_LOCKED
+        });
+    }
     let offer = choose_interface(offers)?;
     ui::step(&steps::FIND_NURA);
     let mut report = Report::new();
@@ -364,6 +405,13 @@ fn nura_from_fastboot(cache: &Path, serial: Serial, record: Record) -> Result<()
         cache: cache.to_path_buf(),
         record: record.with_nura(identity),
     };
+
+    if unlocking {
+        unlock::run(&phone, Start::Fastboot { unlocked }, Origin::Recorded)?;
+        fastboot::wait_for_phone()?;
+        ui::step(&steps::CHECK_FASTBOOT);
+        fastboot::check_phone(&phone.serial, phone.record.slot)?;
+    }
 
     ui::section("Install");
     let (group, approve, apply) = if reinstall {
