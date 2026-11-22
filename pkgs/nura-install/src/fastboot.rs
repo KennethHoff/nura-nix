@@ -51,12 +51,22 @@ fn getvar_text(serial: &Serial, name: &str) -> Result<String> {
     Ok(text)
 }
 
+pub fn getvar(serial: &Serial, name: &str) -> Result<String> {
+    value_in(&getvar_text(serial, name)?, name)
+}
+
 /// True when fastboot's text says the bootloader has no such variable (and gave no value).
 fn says_not_found(text: &str, name: &str) -> bool {
     value_in(text, name).is_err()
         && text
             .lines()
             .any(|l| l.contains("FAILED") && l.to_lowercase().contains("variable not found"))
+}
+
+/// Where the checks take the bootloader's answers from: one question each, or the one `getvar all`.
+pub enum Source {
+    Live,
+    All(Vars),
 }
 
 /// What `fastboot getvar all` listed: `(bootloader) name: value` lines (the FP6 prints some as
@@ -98,19 +108,28 @@ impl Vars {
 }
 
 /// `getvar all`, once, with the raw answer in the transcript.
-pub fn read_all(serial: &Serial) -> Result<Vars> {
+pub fn read_all(serial: &Serial) -> Result<Source> {
     one_serial(serial)?;
     let text = getvar_text(serial, "all")?;
     let vars = Vars::parse(&text);
     if vars.len() == 0 {
         return Err("the phone's `getvar all` listed no variables; nothing was written".into());
     }
-    Ok(vars)
+    Ok(Source::All(vars))
 }
 
-/// The product the bootloader reports.
-pub fn product(vars: &Vars) -> Result<String> {
-    vars.once("product")
+impl Source {
+    pub fn ask(&self, serial: &Serial, name: &str) -> Result<String> {
+        match self {
+            Source::Live => getvar(serial, name),
+            Source::All(vars) => vars.once(name),
+        }
+    }
+}
+
+/// The product the bootloader reports, from the same answers the checks read.
+pub fn product(src: &Source, serial: &Serial) -> Result<String> {
+    src.ask(serial, "product")
 }
 
 fn parse_devices(text: &str) -> Result<Vec<Serial>> {
@@ -195,8 +214,8 @@ fn one_serial(expected: &Serial) -> Result<()> {
     }
 }
 
-fn expect(vars: &Vars, name: &str, want: &str) -> Result<String> {
-    let got = vars.once(name)?;
+fn expect(src: &Source, serial: &Serial, name: &str, want: &str) -> Result<String> {
+    let got = src.ask(serial, name)?;
     if got == want {
         checked(name, &got);
         Ok(got)
@@ -205,8 +224,8 @@ fn expect(vars: &Vars, name: &str, want: &str) -> Result<String> {
     }
 }
 
-fn expect_slot(vars: &Vars, recorded: Slot) -> Result<String> {
-    let got = vars.once("current-slot")?;
+fn expect_slot(src: &Source, serial: &Serial, recorded: Slot) -> Result<String> {
+    let got = src.ask(serial, "current-slot")?;
     if got == recorded.as_str() {
         checked("current-slot", &got);
         return Ok(got);
@@ -237,9 +256,19 @@ fn parse_size(text: &str) -> Option<u64> {
     u64::from_str_radix(digits, 16).ok().filter(|n| *n > 0)
 }
 
-fn sized(vars: &Vars, name: &str) -> Result<String> {
+/// The size of a partition as the bootloader reports it; zero or garbage is an error.
+pub fn partition_size(serial: &Serial, name: &str) -> Result<u64> {
     let var = format!("partition-size:{name}");
-    let got = vars.once(&var)?;
+    let got = getvar(serial, &var)?;
+    parse_size(&got).ok_or_else(|| {
+        format!("the phone reports `{var}: {got}`, not a size above zero; nothing was written")
+            .into()
+    })
+}
+
+fn sized(src: &Source, serial: &Serial, name: &str) -> Result<String> {
+    let var = format!("partition-size:{name}");
+    let got = src.ask(serial, &var)?;
     let size = parse_size(&got).ok_or_else(|| {
         format!("the phone reports `{var}: {got}`, not a size above zero; nothing was written")
     })?;
@@ -247,12 +276,12 @@ fn sized(vars: &Vars, name: &str) -> Result<String> {
     Ok(format!("{size:#x}"))
 }
 
-fn unslotted_absent(vars: &Vars, name: &str) -> Result<String> {
+fn unslotted_absent(src: &Source, serial: &Serial, name: &str) -> Result<String> {
     let var = format!("partition-size:{name}_a");
-    let text = if vars.has(&var) {
-        format!("{var}: {}\n", vars.once(&var)?)
-    } else {
-        format!("getvar:{var} FAILED (remote: 'GetVar Variable Not found')")
+    let text = match src {
+        Source::Live => getvar_text(serial, &var)?,
+        Source::All(vars) if vars.has(&var) => format!("{var}: {}\n", vars.once(&var)?),
+        Source::All(_) => format!("getvar:{var} FAILED (remote: 'GetVar Variable Not found')"),
     };
     if says_not_found(&text, &var) {
         checked(&var, "absent");
@@ -284,41 +313,70 @@ fn check<'a>(label: &str, run: impl FnOnce() -> Result<String> + 'a) -> Check<'a
     }
 }
 
-/// Every fastboot check, in the order they run, answered from the one `getvar all`.
-pub fn checks<'a>(serial: &'a Serial, slot: Slot, vars: &'a Vars) -> Vec<Check<'a>> {
+/// Every fastboot check, in the order they run, answered from `src`.
+pub fn checks<'a>(serial: &'a Serial, slot: Slot, src: &'a Source) -> Vec<Check<'a>> {
     let mut all = vec![
         check("serial", move || {
             one_serial(serial)?;
             checked("serial", serial.as_str());
             Ok(serial.to_string())
         }),
-        check("product", move || expect(vars, "product", PRODUCT)),
-        check("is-userspace", move || expect(vars, "is-userspace", "no")),
-        check("unlocked", move || expect(vars, "unlocked", "yes")),
-        check("current-slot", move || expect_slot(vars, slot)),
-        check("slot-count", move || expect(vars, "slot-count", "2")),
+        check("product", move || expect(src, serial, "product", PRODUCT)),
+        check("is-userspace", move || {
+            expect(src, serial, "is-userspace", "no")
+        }),
+        check("unlocked", move || expect(src, serial, "unlocked", "yes")),
+        check("current-slot", move || expect_slot(src, serial, slot)),
+        check("slot-count", move || expect(src, serial, "slot-count", "2")),
         check("battery-soc-ok", move || {
-            expect(vars, "battery-soc-ok", "yes")
+            expect(src, serial, "battery-soc-ok", "yes")
         }),
     ];
     for partition in SLOTTED {
         for slot in ["a", "b"] {
             let name = format!("{partition}_{slot}");
             all.push(check(&format!("partition-size:{name}"), move || {
-                sized(vars, &name)
+                sized(src, serial, &name)
             }));
         }
     }
     for partition in UNSLOTTED {
         all.push(check(&format!("partition-size:{partition}"), move || {
-            sized(vars, partition)
+            sized(src, serial, partition)
         }));
         all.push(check(
             &format!("partition-size:{partition}_a (absent)"),
-            move || unslotted_absent(vars, partition),
+            move || unslotted_absent(src, serial, partition),
         ));
     }
     all
+}
+
+/// Every fastboot check, stopping at the first that fails; run before the first gate and again after each.
+pub fn check_phone(serial: &Serial, slot: Slot) -> Result<()> {
+    for c in checks(serial, slot, &Source::Live) {
+        ui::run(Job::new(&c.label), || Ok(((), (c.run)()?)))?;
+    }
+    Ok(())
+}
+
+/// The checks that say which phone this is and that it still takes writes.
+const IDENTITY: [&str; 4] = [
+    "fastboot serial",
+    "fastboot is-userspace",
+    "fastboot unlocked",
+    "fastboot current-slot",
+];
+
+/// Only the identity checks: after the writes, answers such as the battery or the snapshot status may
+/// legitimately differ, but the phone must still be this one, in bootloader mode, unlocked, on its slot.
+pub fn check_identity(serial: &Serial, slot: Slot) -> Result<()> {
+    for c in checks(serial, slot, &Source::Live) {
+        if IDENTITY.contains(&c.label.as_str()) {
+            ui::run(Job::new(&c.label), || Ok(((), (c.run)()?)))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -376,6 +434,18 @@ mod tests {
             .to_string()
             .contains("more than once"));
         assert!(v.has("product") && !v.has("unlocked"));
+    }
+
+    #[test]
+    fn identity_labels_exist_among_the_checks() {
+        let serial = Serial::new("ABC123").unwrap();
+        let labels: Vec<String> = checks(&serial, Slot::A, &Source::Live)
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        for want in IDENTITY {
+            assert!(labels.iter().any(|l| l == want), "{want}");
+        }
     }
 
     #[test]

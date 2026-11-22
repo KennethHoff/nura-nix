@@ -112,6 +112,14 @@ pub fn progress_every() -> Duration {
     )
 }
 
+/// `slow` writes are the multi-GiB `flash userdata`.
+pub fn write_timeout(slow: bool) -> Result<Duration> {
+    let default = if slow { 30 * 60 } else { 5 * 60 };
+    Ok(Duration::from_secs(
+        hook_number("NURA_INSTALL_WRITE_TIMEOUT_SECONDS")?.unwrap_or(default),
+    ))
+}
+
 #[cfg(all(test, not(feature = "test-hooks")))]
 mod tests {
     use super::*;
@@ -147,6 +155,7 @@ mod tests {
             "NURA_INSTALL_CURL",
             "NURA_INSTALL_NEEDED_GIB",
             "NURA_INSTALL_WAIT_SECONDS",
+            "NURA_INSTALL_WRITE_TIMEOUT_SECONDS",
         ] {
             std::env::set_var(var, "1");
         }
@@ -161,6 +170,7 @@ mod tests {
         assert_eq!(security_delay_after_move().unwrap(), Duration::from_secs(1));
         assert_eq!(needed_gib().unwrap(), 12);
         assert_eq!(wait_limit().unwrap(), None);
+        assert_eq!(write_timeout(true).unwrap(), Duration::from_secs(1800));
         assert_eq!(nura_index(), "https://images.nura.eco/bpo/index.json");
         assert_ne!(cache_dir().ok(), Some(PathBuf::from("1")));
     }

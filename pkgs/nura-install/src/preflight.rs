@@ -6,10 +6,11 @@ use crate::config;
 use crate::fail::{Fail, Result};
 use crate::fastboot;
 use crate::host;
-use crate::images;
+use crate::images::{self, NuraImages};
 use crate::nura::{self, Build, Offer};
 use crate::phone::{Serial, Slot};
 use crate::render::{limit, plural, Mark};
+use crate::state::NuraIdentity;
 use crate::ui::{self, Job};
 use std::path::Path;
 use std::thread::sleep;
@@ -227,6 +228,7 @@ pub fn adb_side(r: &mut Report, found: Option<Serial>) -> Facts {
         return facts;
     };
     ui::say(&format!("  phone {serial}"));
+    ui::set_phone(&serial);
     let get = |name: &str| adb::getprop(&serial, name);
     r.check("ro.serialno", FIX_PROP, || {
         get("ro.serialno").and_then(|v| same(v, serial.as_str(), "serial"))
@@ -270,9 +272,20 @@ pub fn same_phone(r: &mut Report, before: &Facts, after: &Facts) {
     });
 }
 
+/// What the images step found: everything the install and the record need.
+pub struct Found {
+    pub nura: NuraImages,
+    pub nura_identity: NuraIdentity,
+}
+
 /// Nura's builds for the phone the bootloader reported, from Nura's index fetched now.
-pub fn builds(r: &mut Report, cache: &Path, vars: Option<&fastboot::Vars>) -> Option<Vec<Offer>> {
-    let Some(vars) = vars else {
+pub fn builds(
+    r: &mut Report,
+    cache: &Path,
+    serial: &Serial,
+    src: Option<&fastboot::Source>,
+) -> Option<Vec<Offer>> {
+    let Some(src) = src else {
         r.skip(
             "Nura's builds for this phone",
             "it needs the bootloader's answers",
@@ -280,7 +293,7 @@ pub fn builds(r: &mut Report, cache: &Path, vars: Option<&fastboot::Vars>) -> Op
         return None;
     };
     r.check("Nura's builds for this phone", FIX_NURA, || {
-        let product = fastboot::product(vars)?;
+        let product = fastboot::product(src, serial)?;
         let device = nura::device_for(&product)?;
         let offers = nura::offers(&nura::fetch_index(cache)?, device)?;
         let shown = format!("{} interfaces for {device}", offers.len());
@@ -288,28 +301,47 @@ pub fn builds(r: &mut Report, cache: &Path, vars: Option<&fastboot::Vars>) -> Op
     })
 }
 
-/// Nura's images from the index: downloaded, checked against its hashes and unpacked.
-pub fn images(r: &mut Report, build: &Build, cache: &Path) {
+pub fn nura_images(
+    r: &mut Report,
+    build: &Build,
+    cache: &Path,
+) -> Option<(NuraImages, NuraIdentity)> {
     ui::say(&format!("  Nura build: {}", build.label()));
-    let result = images::nura(cache, build).map(|()| {
+    let result = images::nura(cache, build).map(|images| {
+        let identity = NuraIdentity {
+            build: build.label(),
+            boot_sha256: images.boot.sha256().to_string(),
+            rootfs_sha256: images.rootfs.sha256().to_string(),
+        };
         (
-            (),
-            "downloads match Nura's index; images unpacked".to_string(),
+            (images, identity),
+            "downloads match Nura's index; unpacked images hashed".to_string(),
         )
     });
-    r.check_shown("the Nura images", FIX_NURA, result);
+    r.check_shown("the Nura images", FIX_NURA, result)
+}
+
+/// Nura's images from the index.
+pub fn images(r: &mut Report, nura_build: &Build, cache: &Path) -> Option<Found> {
+    nura_images(r, nura_build, cache).map(|(nura, nura_identity)| Found {
+        nura,
+        nura_identity,
+    })
 }
 
 /// The bootloader's answers as checks of the report: `getvar all` once, then every variable the run
 /// needs; all failures are reported together. Gives the answers when every check passed.
-pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) -> Option<fastboot::Vars> {
-    let vars = r.check("getvar all", FIX_VAR, || {
-        let vars = fastboot::read_all(serial)?;
-        let shown = format!("{} variables", vars.len());
-        Ok((vars, shown))
+pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) -> Option<fastboot::Source> {
+    let src = r.check("getvar all", FIX_VAR, || {
+        let src = fastboot::read_all(serial)?;
+        let shown = match &src {
+            fastboot::Source::All(vars) => format!("{} variables", vars.len()),
+            fastboot::Source::Live => String::new(),
+        };
+        Ok((src, shown))
     })?;
     let mut all_passed = true;
-    for c in fastboot::checks(serial, slot, &vars) {
+    for c in fastboot::checks(serial, slot, &src) {
         all_passed &= r
             .check(&c.label, FIX_VAR, || {
                 let shown = (c.run)()?;
@@ -317,5 +349,5 @@ pub fn fastboot_side(r: &mut Report, serial: &Serial, slot: Slot) -> Option<fast
             })
             .is_some();
     }
-    all_passed.then_some(vars)
+    all_passed.then_some(src)
 }

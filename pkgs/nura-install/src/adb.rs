@@ -319,6 +319,9 @@ pub fn backup(cache: &Path, serial: &Serial) -> Result<PathBuf> {
     take_backup(cache, serial, &dir)
 }
 
+/// What the record says when the owner went on without a backup.
+pub const NO_BACKUP: &str = "no backup taken";
+
 const NO_BACKUP_PHRASE: &str = "no backup";
 
 /// The choice before anything is read from the phone: back up, or skip (which takes a typed phrase,

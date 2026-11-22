@@ -1,5 +1,5 @@
 //! Downloads and unpacking, always checked against a hash: Nura's index. A `Verified` file can only be
-//! made here, after its hash matched.
+//! made here, after its hash matched, and is hashed again right before it is written to the phone.
 use crate::cmd::to_file;
 use crate::fail::Result;
 use crate::host::{curl_file, download_size, file_name_of, mkdir, remove, sha256};
@@ -12,9 +12,45 @@ use std::process::Command;
 #[derive(Clone, Debug)]
 pub struct Verified {
     path: PathBuf,
+    sha256: String,
+    against: &'static str,
+}
+
+impl Verified {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub fn rehash(&self) -> Result<()> {
+        let name = name_of(&self.path);
+        let size = size_text(&self.path);
+        ui::run(
+            Job::new(&format!("hash of {name}")).naming(format!(
+                "re-hashing {name} ({size}) right before it is written"
+            )),
+            || {
+                let got = sha256(&self.path)?;
+                if got == self.sha256 {
+                    Ok(((), format!("matches {}", self.against)))
+                } else {
+                    Err(mismatch(&self.path, &self.sha256, &got, self.against).into())
+                }
+            },
+        )
+    }
+}
+
+pub struct NuraImages {
+    pub boot: Verified,
+    pub rootfs: Verified,
 }
 
 pub const INDEX: &str = "Nura's index";
+pub const UNPACKED: &str = "the hash taken when it was unpacked";
 
 fn name_of(path: &Path) -> String {
     path.file_name()
@@ -60,11 +96,13 @@ fn publish(
     std::fs::rename(&part, dest).map_err(|e| format!("moving {}: {e}", part.display()))?;
     Ok(Verified {
         path: dest.to_path_buf(),
+        sha256: want.to_string(),
+        against,
     })
 }
 
 /// A file kept from an earlier run, hashed again as a step of its own because that takes a while.
-fn cached(dest: &Path, want: &str) -> Result<Option<Verified>> {
+fn cached(dest: &Path, want: &str, against: &'static str) -> Result<Option<Verified>> {
     if !dest.exists() {
         return Ok(None);
     }
@@ -83,6 +121,8 @@ fn cached(dest: &Path, want: &str) -> Result<Option<Verified>> {
     )?;
     Ok(hit.then(|| Verified {
         path: dest.to_path_buf(),
+        sha256: want.to_string(),
+        against,
     }))
 }
 
@@ -91,7 +131,7 @@ pub fn fetch(dir: &Path, pin: &Pin, against: &'static str) -> Result<Verified> {
     mkdir(dir)?;
     let name = file_name_of(&pin.url)?;
     let dest = dir.join(&name);
-    if let Some(file) = cached(&dest, &pin.sha256)? {
+    if let Some(file) = cached(&dest, &pin.sha256, against)? {
         return Ok(file);
     }
     let size = download_size(&pin.url);
@@ -113,7 +153,7 @@ pub fn fetch(dir: &Path, pin: &Pin, against: &'static str) -> Result<Verified> {
 
 /// Unpacks a verified download and hashes the result itself: the index vouches for the compressed
 /// file only. A raw file left by an earlier run is replaced, never trusted.
-fn unpack_xz(xz: &Verified) -> Result<()> {
+fn unpack_xz(xz: &Verified) -> Result<Verified> {
     let raw = xz.path.with_extension("");
     let name = name_of(&xz.path);
     let size = size_text(&xz.path);
@@ -130,16 +170,24 @@ fn unpack_xz(xz: &Verified) -> Result<()> {
             )?
             .success()
             .map(drop)?;
+            let got = sha256(&part)?;
             std::fs::rename(&part, &raw).map_err(|e| format!("moving {}: {e}", part.display()))?;
-            Ok(((), size_text(&raw)))
+            let file = Verified {
+                path: raw.clone(),
+                sha256: got,
+                against: UNPACKED,
+            };
+            Ok((file, format!("{}, hashed", size_text(&raw))))
         },
     )
 }
 
-pub fn nura(cache: &Path, build: &Build) -> Result<()> {
+pub fn nura(cache: &Path, build: &Build) -> Result<NuraImages> {
     let dir = cache.join("downloads");
     let boot = fetch(&dir, &build.boot, INDEX)?;
     let rootfs = fetch(&dir, &build.rootfs, INDEX)?;
-    unpack_xz(&boot)?;
-    unpack_xz(&rootfs)
+    Ok(NuraImages {
+        boot: unpack_xz(&boot)?,
+        rootfs: unpack_xz(&rootfs)?,
+    })
 }

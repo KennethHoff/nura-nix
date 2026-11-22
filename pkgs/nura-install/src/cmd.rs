@@ -4,7 +4,7 @@ use crate::fail::Result;
 use crate::log;
 use crate::ui;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread::{self, sleep};
@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 pub enum Sink<'a> {
     Capture,
     File(&'a Path),
+    /// Show each line the command prints above the spinner and in the transcript.
+    Relay,
 }
 
 pub struct Spec<'a> {
@@ -70,7 +72,7 @@ impl Done {
 
 fn stdio(sink: &Sink) -> Result<Stdio> {
     Ok(match sink {
-        Sink::Capture => Stdio::piped(),
+        Sink::Capture | Sink::Relay => Stdio::piped(),
         Sink::File(path) => Stdio::from(
             File::create(path).map_err(|e| format!("creating {}: {e}", path.display()))?,
         ),
@@ -99,6 +101,22 @@ fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<std::io::Re
                 }
             }
         }
+    })
+}
+
+fn relay(pipe: impl Read + Send + 'static) -> thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut lines = BufReader::new(pipe);
+        let mut raw = Vec::new();
+        let mut all = Vec::new();
+        while lines.read_until(b'\n', &mut raw)? > 0 {
+            let text = String::from_utf8_lossy(&raw).into_owned();
+            log::line(&format!("output: {}", text.trim_end()));
+            ui::relay(&text);
+            all.extend_from_slice(&raw);
+            raw.clear();
+        }
+        Ok(all)
     })
 }
 
@@ -143,8 +161,21 @@ pub fn run(cmd: &mut Command, spec: Spec) -> Result<Done> {
         let data = input.as_bytes().to_vec();
         thread::spawn(move || pipe.write_all(&data))
     });
-    let out = child.stdout.take().map(drain);
-    let err = child.stderr.take().map(drain);
+    let reader = |sink: &Sink, pipe: Box<dyn Read + Send>| {
+        if matches!(sink, Sink::Relay) {
+            relay(pipe)
+        } else {
+            drain(pipe)
+        }
+    };
+    let out = child
+        .stdout
+        .take()
+        .map(|p| reader(&spec.stdout, Box::new(p)));
+    let err = child
+        .stderr
+        .take()
+        .map(|p| reader(&spec.stderr, Box::new(p)));
     ui::set_child(child.id());
     let waited = wait(&mut child, &program, spec.timeout);
     ui::set_child(0);

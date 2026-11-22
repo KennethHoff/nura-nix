@@ -4,8 +4,8 @@
 #
 # It runs adb, fastboot, curl, jq, tar and xz instead of
 # linking crates for USB, HTTP, JSON and LZMA, so the only
-# crate is libc, for the effective user id, the umask, catching Ctrl-C and
-# reading the terminal without buffering. The wrapper puts
+# crate is libc, for the effective user id, the umask, holding signals during a
+# group of writes and reading the terminal without buffering. The wrapper puts
 # those tools on PATH.
 #
 # ## Index, cache and test hooks

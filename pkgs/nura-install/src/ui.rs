@@ -3,6 +3,7 @@
 //! total time, the run ends with `done in ...`, and the transcript gets the same lines plus a plain
 //! progress line now and then for long steps, never spinner frames.
 use crate::fail::Result;
+use crate::phone::Serial;
 use crate::render::{self, Mark, Meter};
 use crate::{config, log, signals, steps};
 use std::fs;
@@ -85,6 +86,10 @@ struct Console {
     active: Option<Active>,
     step: u32,
     total: u32,
+    cache: Option<PathBuf>,
+    serial: Option<Serial>,
+    wrote: bool,
+    noted: bool,
     cur: Option<&'static steps::Step>,
     asking: Option<String>,
     title_at: Option<Instant>,
@@ -102,6 +107,10 @@ impl Console {
             active: None,
             step: 0,
             total: 0,
+            cache: None,
+            serial: None,
+            wrote: false,
+            noted: false,
             cur: None,
             asking: None,
             title_at: None,
@@ -159,9 +168,13 @@ pub fn init() {
         c.tty = tty;
         c.run_started = Some(Instant::now());
     }
-    thread::spawn(|| loop {
-        sleep(FRAME_EVERY);
-        beat();
+    thread::spawn(|| {
+        // The signals belong to the main thread, which may hold them; this one must never take one.
+        signals::block_in_this_thread();
+        loop {
+            sleep(FRAME_EVERY);
+            beat();
+        }
     });
 }
 
@@ -221,10 +234,14 @@ fn label_of(active: &Active) -> String {
 
 /// One heartbeat: notices Ctrl-C, redraws the spinner, writes a progress line to the transcript.
 fn beat() {
-    if signals::interrupted() {
+    if signals::interrupted() && !signals::in_group() {
         crate::interrupted();
     }
     let mut c = lock();
+    if signals::in_group() && !c.noted && signals::pending() {
+        c.noted = true;
+        out(&mut c, "  interrupt noted; finishing this group first");
+    }
     update_title(&mut c);
     let tty = c.tty;
     let Some(active) = c.active.as_ref() else {
@@ -291,6 +308,19 @@ pub fn set_gauge(gauge: Gauge) {
     if let Some(a) = lock().active.as_mut() {
         a.gauge = gauge;
     }
+}
+
+/// A command's own line to show above the spinner, such as fastboot's progress.
+pub fn relay(line: &str) {
+    let mut c = lock();
+    let line = line.trim_end();
+    if line.is_empty() {
+        return;
+    }
+    if let Some(a) = c.active.as_mut() {
+        a.sub = Some(line.trim().to_string());
+    }
+    out(&mut c, &format!("    {line}"));
 }
 
 /// Marks a stretch of work inside the running step (or a step of its own when none runs).
@@ -575,6 +605,34 @@ pub fn finish_run(outcome: &str) {
 pub fn stop_live() {
     let mut c = lock();
     finish(&mut c);
+}
+
+pub fn set_cache(cache: &Path) {
+    lock().cache = Some(cache.to_path_buf());
+}
+
+pub fn set_phone(serial: &Serial) {
+    lock().serial = Some(serial.clone());
+}
+
+/// A write to the phone has begun, so a later stop cannot say nothing was written.
+pub fn note_written() {
+    lock().wrote = true;
+}
+
+pub struct Context {
+    pub cache: Option<PathBuf>,
+    pub serial: Option<Serial>,
+    pub wrote: bool,
+}
+
+pub fn context() -> Context {
+    let c = lock();
+    Context {
+        cache: c.cache.clone(),
+        serial: c.serial.clone(),
+        wrote: c.wrote,
+    }
 }
 
 #[cfg(test)]

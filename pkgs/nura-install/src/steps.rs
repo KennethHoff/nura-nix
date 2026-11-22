@@ -17,6 +17,8 @@ pub struct Step {
     pub takes: Option<&'static str>,
     pub text: &'static [&'static str],
     pub phone: Option<&'static str>,
+    pub after: &'static [&'static str],
+    pub no_return: bool,
 }
 
 const fn you(
@@ -33,6 +35,8 @@ const fn you(
         takes,
         text,
         phone,
+        after: &[],
+        no_return: false,
     }
 }
 
@@ -49,10 +53,31 @@ const fn tool(
         takes,
         text,
         phone,
+        after: &[],
+        no_return: false,
+    }
+}
+
+const fn approval(
+    title: &'static str,
+    short: &'static str,
+    text: &'static [&'static str],
+    after: &'static [&'static str],
+) -> Step {
+    Step {
+        actor: Actor::You,
+        title,
+        short,
+        takes: None,
+        text,
+        phone: None,
+        after,
+        no_return: true,
     }
 }
 
 const ON_ANDROID: &str = "stays on Android, unchanged";
+const HANDS_OFF: &str = "don't touch it or the cable";
 const NOT_TOUCHED: &str = "untouched";
 
 pub const CHECK_COMPUTER: Step = tool(
@@ -123,7 +148,7 @@ pub const FIND_IMAGES: Step = tool(
     Some("1-20 min (cached files are only re-checked)"),
     &[
         "- downloads the newest build of the chosen interface, checks it against the hashes in Nura's index",
-        "- unpacks the images",
+        "- unpacks the images and hashes them",
     ],
     Some("nothing sent"),
 );
@@ -159,6 +184,41 @@ pub const TO_FASTBOOT: Step = you(
     ],
     Some("nothing written yet"),
 );
+pub const CHECK_FASTBOOT: Step = tool(
+    "Check the phone in fastboot",
+    Some("under 10 s"),
+    &["- reads serial, slot, partition layout, unlock state, update status, battery"],
+    Some("unchanged"),
+);
+pub const APPROVE_INSTALL: Step = approval(
+    "Approve the install",
+    "choose Install Nura",
+    &[],
+    &["- erases Android and all its data"],
+);
+pub const INSTALL: Step = tool(
+    "Install Nura",
+    Some("3-10 min"),
+    &[
+        "- re-checks the phone (same serial, still unlocked, same slot)",
+        "- erases dtbo, vendor_boot",
+        "- writes userdata, boot",
+    ],
+    Some(HANDS_OFF),
+);
+pub const APPROVE_REBOOT: Step = you(
+    "Approve the reboot",
+    "choose Reboot",
+    None,
+    &[],
+    Some("in fastboot, all writes done; after `stop`, hold Power to restart it"),
+);
+pub const REBOOT: Step = tool(
+    "Restart the phone",
+    Some("under 10 s, then 1-3 min first start"),
+    &["- sends `fastboot reboot`"],
+    Some("restarts into the new system"),
+);
 pub const SUMMARY: Step = tool(
     "Summarize",
     Some("under 10 s"),
@@ -167,7 +227,7 @@ pub const SUMMARY: Step = tool(
 );
 
 #[cfg(test)]
-pub const ALL: [&Step; 12] = [
+pub const ALL: [&Step; 17] = [
     &FIND_BUILDS,
     &CHOOSE_UI,
     &CHECK_COMPUTER,
@@ -179,6 +239,11 @@ pub const ALL: [&Step; 12] = [
     &CONFIRM,
     &BACKUP,
     &TO_FASTBOOT,
+    &CHECK_FASTBOOT,
+    &APPROVE_INSTALL,
+    &INSTALL,
+    &APPROVE_REBOOT,
+    &REBOOT,
     &SUMMARY,
 ];
 
@@ -196,7 +261,14 @@ pub fn header(n: u32, total: u32, step: &Step) -> String {
         Actor::You => "YOU",
         Actor::Tool => "TOOL",
     };
-    format!("== Step {n} of {total} · {actor}: {}", step.title)
+    if step.no_return {
+        format!(
+            "== Step {n} of {total} · {actor}: {:<30}  POINT OF NO RETURN",
+            step.title
+        )
+    } else {
+        format!("== Step {n} of {total} · {actor}: {}", step.title)
+    }
 }
 
 /// The labelled lines under a header; a line appears only when it applies.
@@ -213,6 +285,7 @@ pub fn block(step: &Step) -> Vec<String> {
     if let Some(phone) = step.phone {
         field(&mut out, "Phone:", &[phone]);
     }
+    field(&mut out, "After this:", step.after);
     out
 }
 
@@ -223,12 +296,17 @@ mod tests {
     #[test]
     fn a_step_block_aligns_its_labels_and_hangs_continuations() {
         assert_eq!(
-            block(&CHECK_COMPUTER),
+            block(&APPROVE_INSTALL),
+            ["  After this: - erases Android and all its data"]
+        );
+        assert_eq!(
+            block(&INSTALL),
             [
-                "  Takes:      under 1 min",
-                "  Does:       - programs this run needs start",
-                "              - free disk space",
-                "  Phone:      untouched",
+                "  Takes:      3-10 min",
+                "  Does:       - re-checks the phone (same serial, still unlocked, same slot)",
+                "              - erases dtbo, vendor_boot",
+                "              - writes userdata, boot",
+                "  Phone:      don't touch it or the cable",
             ]
         );
     }
@@ -249,14 +327,24 @@ mod tests {
     }
 
     #[test]
-    fn a_header_numbers_the_step_and_names_its_actor() {
+    fn every_point_of_no_return_is_a_you_step_with_the_marker_and_an_after_line() {
+        let step = &APPROVE_INSTALL;
+        assert!(step.no_return && step.actor == Actor::You, "{}", step.title);
+        assert!(header(8, 14, step).ends_with("POINT OF NO RETURN"));
+        assert!(block(step).iter().any(|l| l.starts_with("  After this: ")));
+    }
+
+    #[test]
+    fn only_the_approvals_of_irreversible_writes_carry_the_marker() {
+        let marked: Vec<&str> = ALL
+            .iter()
+            .filter(|s| s.no_return)
+            .map(|s| s.title)
+            .collect();
+        assert_eq!(marked, ["Approve the install"]);
         assert_eq!(
             header(1, 14, &CHECK_COMPUTER),
             "== Step 1 of 14 · TOOL: Check this computer"
-        );
-        assert_eq!(
-            header(3, 14, &TO_FASTBOOT),
-            "== Step 3 of 14 · YOU: Put the phone in fastboot"
         );
     }
 }

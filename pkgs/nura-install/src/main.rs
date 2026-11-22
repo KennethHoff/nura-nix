@@ -3,6 +3,7 @@ mod cmd;
 mod config;
 mod fail;
 mod fastboot;
+mod group;
 mod host;
 mod images;
 mod log;
@@ -12,29 +13,37 @@ mod preflight;
 mod prompt;
 mod render;
 mod signals;
+mod state;
 mod steps;
 mod ui;
 
 use fail::{Fail, Result};
+use group::{execute, Group, Phone};
 use nura::Offer;
-use preflight::{Facts, Report};
+use preflight::{Facts, Found, Report};
 use prompt::Entry;
+use state::{Record, State};
 use std::path::Path;
 use std::process::ExitCode;
 
 const USAGE: &str = "Usage: nura-install
 
-Takes no arguments: it backs up the phone and checks that it can take Nura. Nothing is written to
-the phone.
+Takes no arguments: the run follows from the phone's state.
 
-  Android over adb                check the phone, find Nura's build, back up the phone, in
-                                  two sections (Preflight, Prepare)
+  Android over adb, no record     install Nura: one run in four sections (Preflight, Prepare,
+                                  Install, Finish)
   -h, --help                      this text
 
 Exit codes:
   0  finished
-  1  stopped or failed (the Preflight: at least one check failed, it runs them all)
+  1  stopped or failed (the Preflight: at least one check failed, it runs them all);
+     the message says what state the phone and its record are in
   2  usage error";
+
+const WARNINGS: &str = "\
+Rules:
+  - never relock the bootloader
+  - never run `qbootctl -s` or switch slots, on either system";
 
 /// `Ok(true)` for the help text; the tool takes no other argument.
 fn parse_args(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, String> {
@@ -47,23 +56,34 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> std::result::Result<boo
     }
 }
 
-/// Ctrl-C, hang-up or terminate: says that nothing was written to the phone, then stops.
+/// Ctrl-C, hang-up or terminate outside a write group: says what state the phone and the record are in, then stops.
 pub fn interrupted() -> ! {
     prompt::restore_terminal();
     ui::stop_live();
     ui::kill_child();
+    let ctx = ui::context();
+    let written = if ctx.wrote {
+        "Some writes of this run may already be on the phone."
+    } else {
+        "Nothing was written to the phone."
+    };
+    let record = match (&ctx.cache, &ctx.serial) {
+        (Some(cache), Some(serial)) => state::describe(cache, serial),
+        _ => "No record was changed.".to_string(),
+    };
     ui::end_step();
-    ui::say("\ninterrupted: Nothing was written to the phone.");
+    ui::say(&format!("\ninterrupted: {written} {record}"));
     log::line("outcome: interrupted");
     finish_output("interrupted");
     std::process::exit(i32::from(signals::exit_code()))
 }
 
-/// The line the summary carries about the backup; a missing one is said loudly.
-fn backup_note(backup: Option<&Path>) -> String {
-    match backup {
-        Some(dir) => format!("The backup of Android is under {}.", dir.display()),
-        None => "NO BACKUP WAS TAKEN: nothing of Android's data is saved.".to_string(),
+/// The line every summary carries about the backup; a missing one is said loudly.
+fn backup_note(recorded: &str) -> String {
+    if recorded == adb::NO_BACKUP {
+        "NO BACKUP WAS TAKEN: Android and its data are gone for good.".to_string()
+    } else {
+        format!("The backup of Android stays under {recorded}.")
     }
 }
 
@@ -103,6 +123,12 @@ fn main() -> ExitCode {
                     "stopped"
                 }
             };
+            if matches!(fail, Fail::Stop(_)) {
+                let ctx = ui::context();
+                if let (Some(cache), Some(serial)) = (&ctx.cache, &ctx.serial) {
+                    eprintln!("{}", state::describe(cache, serial));
+                }
+            }
             (fail.exit_code(), label)
         }
     };
@@ -114,6 +140,7 @@ fn run() -> Result<()> {
     let euid = host::harden_process()?;
     let cache = config::cache_dir()?;
     host::ensure_cache(&cache, euid)?;
+    ui::set_cache(&cache);
     log::open(&cache, &host::timestamp()?, "run")?;
     let _lock = host::lock(&cache)?;
     prompt::require_terminal()?;
@@ -161,7 +188,7 @@ fn choose_interface(offers: Vec<Offer>) -> Result<Offer> {
 }
 
 fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
-    ui::plan(11 + u32::from(wait));
+    ui::plan(17 + u32::from(wait));
     ui::section("Preflight");
     ui::step(&steps::CHECK_COMPUTER);
     let mut report = Report::new();
@@ -194,7 +221,7 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     let early = preflight::fastboot_side(&mut bootloader, &serial, slot);
     ui::step(&steps::FIND_BUILDS);
     let mut finding = Report::new();
-    let offers = preflight::builds(&mut finding, cache, early.as_ref());
+    let offers = preflight::builds(&mut finding, cache, &serial, early.as_ref());
     bootloader.conclude("nura-install")?;
     finding.conclude("nura-install")?;
     let (Some(_), Some(offers)) = (early, offers) else {
@@ -208,8 +235,12 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
     let again = preflight::adb_side(&mut report, found_phone);
     preflight::same_phone(&mut report, &facts, &again);
     ui::step(&steps::FIND_IMAGES);
-    preflight::images(&mut report, &offer.build, cache);
+    let found = preflight::images(&mut report, &offer.build, cache);
     report.conclude("nura-install")?;
+    let Some(found) = found else {
+        return the_run_lost_track();
+    };
+
     ui::section("Prepare");
     ui::step(&steps::CONFIRM);
     adb::confirm_losses()?;
@@ -221,10 +252,48 @@ fn install_fresh(cache: &Path, wait: bool) -> Result<()> {
         ui::say("  skipped: no backup is taken");
         None
     };
+    ui::step(&steps::TO_FASTBOOT);
+    fastboot::wait_for_phone()?;
+    ui::step(&steps::CHECK_FASTBOOT);
+    fastboot::check_phone(&serial, slot)?;
+    let Found {
+        nura,
+        nura_identity,
+    } = found;
+    let install = Group::install(&nura)?;
+    group::images_fit(&serial, slot, &install)?;
+    let record = Record {
+        state: State::NuraInProgress,
+        slot,
+        backup: backup.map_or_else(|| adb::NO_BACKUP.to_string(), |p| p.display().to_string()),
+        nura: nura_identity,
+    };
+    ui::say(&format!(
+        "  all fastboot checks passed (slot {})",
+        record.slot.as_str()
+    ));
+    let phone = Phone {
+        serial,
+        cache: cache.to_path_buf(),
+        record,
+    };
+
+    ui::section("Install");
+    ui::step(&steps::APPROVE_INSTALL);
+    ui::say(WARNINGS);
+    execute(&phone, install, &steps::INSTALL)?;
+
     ui::section("Finish");
+    ui::step(&steps::APPROVE_REBOOT);
+    execute(&phone, Group::reboot()?, &steps::REBOOT)?;
+    finish_nura(&phone)
+}
+
+fn finish_nura(phone: &Phone) -> Result<()> {
     ui::step(&steps::SUMMARY);
-    ui::say("Nothing was written to the phone.");
-    ui::say(&backup_note(backup.as_deref()));
+    ui::say("Nura is booting. Log in as `user` with password 147147.");
+    ui::say("  - kernel updates only while the phone is charged and plugged in");
+    ui::say(&backup_note(&phone.record.backup));
     Ok(())
 }
 
